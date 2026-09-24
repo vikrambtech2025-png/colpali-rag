@@ -159,7 +159,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 tmp.write_bytes(bytes_)
                 status.status = "running"
-                report: IngestReport = runtime.pipeline.ingest_pdf(tmp)
+                report: IngestReport = runtime.pipeline.ingest_pdf(tmp, src_name=file.filename)
                 status.report = report.to_dict()
                 status.status = "done" if not report.errors else "partial"
             except Exception as exc:  # pragma: no cover

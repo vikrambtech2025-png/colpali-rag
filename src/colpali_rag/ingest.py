@@ -45,12 +45,12 @@ class IngestReport:
         }
 
 
-def render_pdf_pages(pdf_path: Path, pages_dir: Path, scale: float = 1.5) -> list[tuple[Path, str]]:
+def render_pdf_pages(pdf_path: Path, pages_dir: Path, scale: float = 1.5, stem_override: str | None = None) -> list[tuple[Path, str]]:
     """Render every page to PNG and extract text. Returns [(png_path, text)]."""
     import fitz  # PyMuPDF
 
     doc = fitz.open(str(pdf_path))
-    stem = slugify(pdf_path.stem)
+    stem = slugify(stem_override or pdf_path.stem)
     out_dir = pages_dir / stem
     out_dir.mkdir(parents=True, exist_ok=True)
     pages: list[tuple[Path, str]] = []
@@ -85,16 +85,20 @@ class IngestPipeline:
         self.colpali = colpali
         self.text = text
 
-    def ingest_pdf(self, pdf_path: str | Path) -> IngestReport:
+    def ingest_pdf(self, pdf_path: str | Path, src_name: str | None = None) -> IngestReport:
+        """Ingest a PDF. When the file lives at a temp path (API uploads), pass
+        the original filename via src_name so the stored source and page-image
+        dirs use the real document name instead of the temp name."""
         from time import perf_counter
 
         configure_hf_env(self.settings)
         self.store.ensure_collection()
         pdf = Path(pdf_path)
-        report = IngestReport(src=pdf.name)
+        src = src_name or pdf.name
+        report = IngestReport(src=src)
         t0 = perf_counter()
-        with timed(f"render {pdf.name}"):
-            pages = render_pdf_pages(pdf, self.settings.pages_dir)
+        with timed(f"render {src}"):
+            pages = render_pdf_pages(pdf, self.settings.pages_dir, stem_override=src)
         if not pages:
             report.errors.append("no pages rendered")
             return report
@@ -127,15 +131,16 @@ class IngestPipeline:
         # upsert
         with timed(f"upsert {len(pages)} points"):
             for (png, text), vec, (dense, sparse) in zip(pages, colpali_vecs, text_embs):
+                page_no = int(png.stem.split("-")[-1])
                 self.store.upsert_page(
-                    src=pdf.name,
-                    page=int(png.stem.split("-")[-1]),
+                    src=src,
+                    page=page_no,
                     colpali_vecs=vec,
                     dense_vec=dense,
                     sparse=sparse,
                     payload={
-                        "src": pdf.name,
-                        "page": int(png.stem.split("-")[-1]),
+                        "src": src,
+                        "page": page_no,
                         "text": text,
                         "image": str(png.relative_to(self.settings.pages_dir)).replace("\\", "/"),
                         "ingested_at": now_iso(),
@@ -154,16 +159,16 @@ class IngestPipeline:
 
             mlflow.set_tracking_uri("file:" + str(self.settings.base_dir / "data" / "mlruns"))
             with mlflow.start_run(run_name=f"ingest-{slugify(pdf.name)}"):
-                mlflow.log_params({"source": pdf.name, "colpali_model": self.settings.colpali_model})
+                mlflow.log_params({"source": src, "colpali_model": self.settings.colpali_model})
                 mlflow.log_metrics(
                     {"pages": report.pages, "colpali_points": report.colpali_points, "text_points": report.text_points}
                 )
         except Exception as exc:  # pragma: no cover
             log.warning("mlflow logging skipped: %s", exc)
 
-        manifest = self.settings.manifests_dir / f"{slugify(pdf.name)}.json"
+        manifest = self.settings.manifests_dir / f"{slugify(src)}.json"
         manifest.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
-        log.info("Ingested %s: %d pages in %.1fs", pdf.name, report.pages, report.duration_s)
+        log.info("Ingested %s: %d pages in %.1fs", src, report.pages, report.duration_s)
         return report
 
 
