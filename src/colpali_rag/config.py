@@ -14,6 +14,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[2]
 
+# ---- HF cache must be set at import time ----------------------------------
+# huggingface_hub/transformers snapshot cache paths when they are first
+# imported, so env vars set later (e.g. in configure_hf_env) are ignored.
+# Set them here, before any HF import can happen. (setdefault so an explicit
+# HF_HOME from the environment still wins.)
+os.environ.setdefault("HF_HOME", str(ROOT / "data" / "hf-cache"))
+os.environ.setdefault("HF_HUB_CACHE", str(ROOT / "data" / "hf-cache" / "hub"))
+os.environ.setdefault("TRANSFORMERS_CACHE", str(ROOT / "data" / "hf-cache" / "transformers"))
+
 
 def _load_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
@@ -135,7 +144,20 @@ def get_settings() -> Settings:
 
 
 def configure_hf_env(settings: Settings) -> None:
-    """Point HF/transformers caches at the project data dir (D: drive)."""
-    os.environ.setdefault("HF_HOME", str(settings.hf_cache))
-    os.environ.setdefault("HF_HUB_CACHE", str(settings.hf_cache / "hub"))
-    os.environ.setdefault("TRANSFORMERS_CACHE", str(settings.hf_cache / "transformers"))
+    """Point HF/transformers caches at the project data dir (D: drive).
+
+    huggingface_hub reads these at import time, so after the fact we also
+    patch its already-imported constants to match the (possibly overridden)
+    settings values.
+    """
+    os.environ["HF_HOME"] = str(settings.hf_cache)
+    os.environ["HF_HUB_CACHE"] = str(settings.hf_cache / "hub")
+    os.environ["TRANSFORMERS_CACHE"] = str(settings.hf_cache / "transformers")
+    try:
+        import huggingface_hub.constants as hfc
+
+        hfc.HF_HOME = settings.hf_cache
+        hfc.HF_HUB_CACHE = Path(settings.hf_cache) / "hub"
+        hfc.TRANSFORMERS_CACHE = Path(settings.hf_cache) / "transformers"
+    except Exception:
+        pass  # older huggingface_hub: env vars above suffice for fresh imports
