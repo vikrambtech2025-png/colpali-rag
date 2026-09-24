@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Iterable
 
 import numpy as np
@@ -28,49 +29,50 @@ class ColPaliEmbedder:
         self.settings = settings
         self._model: Any = None
         self._processor: Any = None
+        self._load_lock = threading.Lock()
 
     def _model_classes(self) -> tuple[type, type]:
-        """Pick transformers-native classes by model family."""
-        from transformers import (
-            ColPaliForRetrieval,
-            ColPaliProcessor,
-            ColQwen2ForRetrieval,
-            ColQwen2Processor,
-        )
+        """Pick transformers-native classes by model family.
 
+        Imported inside a lock (see load()) because transformers lazy-loads
+        these modules; importing them concurrently from two threads can fail
+        intermittently with 'cannot import name'.
+        """
         low = self.settings.colpali_model.lower()
-        if "qwen2.5" in low:
-            # colqwen2.5-* checkpoints are Qwen2.5-VL based but exposed via the
-            # same ColQwen2 classes in colpali-engine; transformers-native path
-            # supports them through ColQwen2ForRetrieval when available.
-            return ColQwen2ForRetrieval, ColQwen2Processor
         if "qwen" in low:
+            from transformers import ColQwen2ForRetrieval, ColQwen2Processor
+
             return ColQwen2ForRetrieval, ColQwen2Processor
+        from transformers import ColPaliForRetrieval, ColPaliProcessor
+
         return ColPaliForRetrieval, ColPaliProcessor
 
     # -- lifecycle --------------------------------------------------------
     def load(self) -> None:
         if self._model is not None:
             return
-        import torch
+        with self._load_lock:  # serialize first load across ingest/query threads
+            if self._model is not None:
+                return
+            import torch
 
-        model_cls, proc_cls = self._model_classes()
-        model_id = self.settings.colpali_model
-        log.info(
-            "Loading %s from %s (device=%s, dtype=float16)",
-            model_cls.__name__,
-            model_id,
-            self.settings.resolved_device,
-        )
-        self._model = model_cls.from_pretrained(
-            model_id,
-            torch_dtype=torch.float16,
-            device_map=self.settings.resolved_device,
-            trust_remote_code=True,
-        )
-        self._model.eval()
-        self._processor = proc_cls.from_pretrained(model_id, trust_remote_code=True)
-        log.info("ColPali embedder ready: %s", model_id)
+            model_cls, proc_cls = self._model_classes()
+            model_id = self.settings.colpali_model
+            log.info(
+                "Loading %s from %s (device=%s, dtype=float16)",
+                model_cls.__name__,
+                model_id,
+                self.settings.resolved_device,
+            )
+            self._model = model_cls.from_pretrained(
+                model_id,
+                torch_dtype=torch.float16,
+                device_map=self.settings.resolved_device,
+                trust_remote_code=True,
+            )
+            self._model.eval()
+            self._processor = proc_cls.from_pretrained(model_id, trust_remote_code=True)
+            log.info("ColPali embedder ready: %s", model_id)
 
     def unload(self) -> None:
         self._model = None
@@ -145,23 +147,27 @@ class TextEmbedder:
         self.settings = settings
         self._dense: Any = None
         self._sparse: Any = None
+        self._load_lock = threading.Lock()
 
     def load(self) -> None:
         if self._dense is not None:
             return
-        from fastembed import SparseTextEmbedding, TextEmbedding
+        with self._load_lock:  # serialize first load across threads
+            if self._dense is not None:
+                return
+            from fastembed import SparseTextEmbedding, TextEmbedding
 
-        log.info("Loading dense %s", self.settings.text_embed_model)
-        self._dense = TextEmbedding(
-            model_name=self.settings.text_embed_model,
-            cache_dir=str(self.settings.hf_cache),
-        )
-        log.info("Loading sparse %s", self.settings.text_sparse_model)
-        self._sparse = SparseTextEmbedding(
-            model_name=self.settings.text_sparse_model,
-            cache_dir=str(self.settings.hf_cache),
-        )
-        log.info("Text embedder ready")
+            log.info("Loading dense %s", self.settings.text_embed_model)
+            self._dense = TextEmbedding(
+                model_name=self.settings.text_embed_model,
+                cache_dir=str(self.settings.hf_cache),
+            )
+            log.info("Loading sparse %s", self.settings.text_sparse_model)
+            self._sparse = SparseTextEmbedding(
+                model_name=self.settings.text_sparse_model,
+                cache_dir=str(self.settings.hf_cache),
+            )
+            log.info("Text embedder ready")
 
     @property
     def is_loaded(self) -> bool:

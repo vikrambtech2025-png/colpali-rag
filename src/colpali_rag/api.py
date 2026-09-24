@@ -167,7 +167,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status.status = "error"
                 status.report = {"errors": [str(exc)]}
             finally:
-                tmp.unlink(missing_ok=True)
+                # Windows may briefly hold the PDF handle after fitz closes
+                for _attempt in range(5):
+                    try:
+                        tmp.unlink(missing_ok=True)
+                        break
+                    except PermissionError:
+                        time.sleep(0.4)
 
         threading.Thread(target=worker, daemon=True).start()
         return status
