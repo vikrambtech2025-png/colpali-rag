@@ -1,0 +1,141 @@
+"""Central configuration: .env (secrets/env) + config.yaml (tunables) + CLI overrides.
+
+Resolution order: defaults < config.yaml < .env < CLI overrides.
+"""
+from __future__ import annotations
+
+import os
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_yaml(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as fh:
+        return yaml.safe_load(fh) or {}
+
+
+class Settings(BaseSettings):
+    """Runtime configuration. Env vars (prefixed as-is) override config.yaml + defaults."""
+
+    model_config = SettingsConfigDict(
+        env_file=str(ROOT / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    # ---- paths ----
+    base_dir: Path = ROOT
+    corpus_dir: Path = ROOT / "data" / "corpus"
+    pages_dir: Path = ROOT / "data" / "pages"
+    qdrant_path: Path = ROOT / "data" / "qdrant"
+    hf_cache: Path = ROOT / "data" / "hf-cache"
+    manifests_dir: Path = ROOT / "data" / "manifests"
+
+    # ---- models ----
+    colpali_model: str = "vidore/colqwen2-v1.0-hf"
+    text_embed_model: str = "BAAI/bge-large-en-v1.5"
+    text_sparse_model: str = "Qdrant/bm25"
+    device: str = "auto"
+    embed_batch_size: int = 2
+
+    # ---- vector db (Qdrant local mode: single writer process = the API server) ----
+    collection: str = "docs"
+    colpali_dim: int = 128
+    dense_dim: int = 1024
+    distance: str = "Dot"
+
+    # ---- retrieval ----
+    top_k: int = 8
+    colpali_prefetch: int = 30
+    dense_prefetch: int = 60
+    sparse_prefetch: int = 60
+    rrf_k: int = 60
+
+    # ---- generation (OmniRoute gateway, free kilo models) ----
+    omniroute_base_url: str = "http://localhost:8080/v1"
+    omniroute_api_key: str = "local"
+    omniroute_model: str = "kilo"
+    generation_mode: str = "text"  # text | vision
+    generation_top_pages: int = 3
+    excerpt_chars: int = 16000
+    temperature: float = 0.2
+    max_tokens: int = 700
+    llm_timeout: float = 90.0
+
+    # ---- API ----
+    api_host: str = "127.0.0.1"
+    api_port: int = 8000
+    api_key: str = ""  # empty = auth disabled
+
+    # ---- OCR ----
+    ocr_enabled: bool = False
+    min_text_chars: int = 40
+
+    def __init__(self, **kwargs: Any) -> None:
+        yaml_cfg = _load_yaml(ROOT / "config.yaml")
+        flat: dict[str, Any] = {}
+        for section in yaml_cfg.values():
+            if isinstance(section, dict):
+                flat.update(section)
+        flat.pop("paths", None)
+        # paths from config.yaml are relative to repo root
+        paths = yaml_cfg.get("paths", {})
+        overrides: dict[str, Any] = {}
+        for key, val in paths.items():
+            overrides[key] = ROOT / val
+        overrides.update(flat)
+        overrides.update(kwargs)
+        super().__init__(**overrides)
+
+    # ---- resolved helpers ----
+    @property
+    def resolved_device(self) -> str:
+        if self.device != "auto":
+            return self.device
+        try:
+            import torch  # noqa: F401
+
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            return "cpu"
+
+    def ensure_dirs(self) -> None:
+        for d in (self.corpus_dir, self.pages_dir, self.manifests_dir):
+            d.mkdir(parents=True, exist_ok=True)
+        if self.qdrant_path:
+            self.qdrant_path.mkdir(parents=True, exist_ok=True)
+        self.hf_cache.mkdir(parents=True, exist_ok=True)
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "colpali_model": self.colpali_model,
+            "text_embed_model": self.text_embed_model,
+            "device": self.resolved_device,
+            "collection": self.collection,
+            "generation_mode": self.generation_mode,
+            "generation_model": self.omniroute_model,
+            "generation_base_url": self.omniroute_base_url,
+            "ocr_enabled": self.ocr_enabled,
+            "api": f"{self.api_host}:{self.api_port}",
+        }
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()
+
+
+def configure_hf_env(settings: Settings) -> None:
+    """Point HF/transformers caches at the project data dir (D: drive)."""
+    os.environ.setdefault("HF_HOME", str(settings.hf_cache))
+    os.environ.setdefault("HF_HUB_CACHE", str(settings.hf_cache / "hub"))
+    os.environ.setdefault("TRANSFORMERS_CACHE", str(settings.hf_cache / "transformers"))

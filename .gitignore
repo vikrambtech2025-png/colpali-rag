@@ -1,0 +1,30 @@
+# env / secrets
+.env
+*.local
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# data & models (never commit)
+data/raw/
+data/processed/
+data/corpus/
+data/pages/
+data/qdrant/
+data/qdrant-*/
+data/hf-cache/
+data/manifests/
+models/
+runs/
+
+# notebooks
+notebooks/.ipynb_checkpoints/
+
+# os
+Thumbs.db
+.DS_Store

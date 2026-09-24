@@ -1,0 +1,38 @@
+# ColPali RAG tunables. CLI overrides beat config.yaml; .env beats defaults.
+model:
+  colpali_id: "vidore/colqwen2-v1.0-hf"  # visual retriever (late interaction, MaxSim; fits 6GB VRAM fp16)
+  text_embed_id: "BAAI/bge-large-en-v1.5"  # dense text embeddings (1024d, fastembed)
+  text_sparse_id: "Qdrant/bm25"             # sparse text leg (fastembed BM25, CPU)
+  device: "auto"                       # auto | cuda | cpu
+  embed_batch_size: 2
+
+paths:
+  corpus_dir: data/corpus
+  pages_dir: data/pages
+  qdrant_path: data/qdrant
+  hf_cache: data/hf-cache
+  manifests_dir: data/manifests
+
+vectordb:
+  collection: docs
+  colpali_dim: 128
+  dense_dim: 1024
+  distance: Dot
+
+retrieval:
+  top_k: 8
+  colpali_prefetch: 30
+  dense_prefetch: 60
+  sparse_prefetch: 60
+  rrf_k: 60
+
+generation:
+  mode: text            # text | vision
+  top_pages: 3
+  excerpt_chars: 16000
+  temperature: 0.2
+  max_tokens: 700
+
+ocr:
+  enabled: false        # true = OCR pages with no embedded text (rapidocr)
+  min_text_chars: 40
