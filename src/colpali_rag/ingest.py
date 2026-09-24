@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from .config import Settings, configure_hf_env
+from .config import Settings, configure_hf_env, mlflow_tracking_uri
 from .embeddings import ColPaliEmbedder, TextEmbedder
 from .qdrant_store import QdrantStore
 from .utils import now_iso, slugify, timed
@@ -157,7 +157,7 @@ class IngestPipeline:
         try:
             import mlflow
 
-            mlflow.set_tracking_uri("file:" + str(self.settings.base_dir / "data" / "mlruns"))
+            mlflow.set_tracking_uri(mlflow_tracking_uri(self.settings))
             with mlflow.start_run(run_name=f"ingest-{slugify(pdf.name)}"):
                 mlflow.log_params({"source": src, "colpali_model": self.settings.colpali_model})
                 mlflow.log_metrics(

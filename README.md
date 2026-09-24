@@ -21,7 +21,7 @@ goes to your OmniRoute kilo model.
 ## Quickstart
 
 ```powershell
-# 1) one-time setup: install deps + generate demo corpus (figures + text PDFs)
+# 1) one-time setup: install deps (incl. MLflow tracking) + generate demo corpus
 .\powershell\setup.ps1
 
 # 2) start the app (owns the Qdrant index; first start downloads models into data/hf-cache)

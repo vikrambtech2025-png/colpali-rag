@@ -143,6 +143,16 @@ def get_settings() -> Settings:
     return Settings()
 
 
+def mlflow_tracking_uri(settings: Settings) -> str:
+    """SQLite-backed MLflow tracking URI under data/mlruns.
+
+    MLflow >= 3 refuses the legacy file-store backend, so we use sqlite.
+    """
+    db = settings.base_dir / "data" / "mlruns" / "mlflow.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    return "sqlite:///" + db.as_posix()
+
+
 def configure_hf_env(settings: Settings) -> None:
     """Point HF/transformers caches at the project data dir (D: drive).
 

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import Settings, configure_hf_env
+from .config import Settings, configure_hf_env, get_settings, mlflow_tracking_uri
 from .embeddings import ColPaliEmbedder, TextEmbedder
 from .qdrant_store import QdrantStore
 from .retrieve import Retriever
@@ -91,10 +91,12 @@ def main(argv: list[str] | None = None) -> int:
         try:
             import mlflow
 
-            mlflow.set_tracking_uri("file:" + str(settings.base_dir / "data" / "mlruns"))
+            mlflow.set_tracking_uri(mlflow_tracking_uri(settings))
             with mlflow.start_run(run_name=f"eval-{args.mode}"):
                 mlflow.log_params({"mode": args.mode, "golden": str(args.golden), "n": len(golden)})
-                mlflow.log_metrics({k: v for k, v in metrics.items() if isinstance(v, (int, float))})
+                # MLflow forbids '@' in metric names; hit@5 -> hit_5, ndcg@5 -> ndcg_5
+                safe = {k.replace("@", "_"): v for k, v in metrics.items() if isinstance(v, (int, float))}
+                mlflow.log_metrics(safe)
         except Exception as exc:  # pragma: no cover
             print(f"mlflow skipped: {exc}")
     return 0

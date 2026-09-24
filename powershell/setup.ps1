@@ -4,7 +4,7 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 Write-Host '[1/3] Installing dependencies (first run downloads CUDA torch, may take a while)...'
-uv sync
+uv sync --extra tracking
 
 Write-Host '[2/3] Generating demo corpus PDFs (text + figures)...'
 uv run python -m scripts.make_demo_corpus
