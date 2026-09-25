@@ -56,11 +56,20 @@ class Settings(BaseSettings):
     device: str = "auto"
     embed_batch_size: int = 2
 
-    # ---- vector db (Qdrant local mode: single writer process = the API server) ----
+    # ---- vector db (local embedded or hosted Qdrant) ----
     collection: str = "docs"
     colpali_dim: int = 128
     dense_dim: int = 1024
     distance: str = "Dot"
+    # Hosted Qdrant cluster (recommended for a real deployment). Provide
+    # QDRANT_URL + QDRANT_API_KEY in .env; empty qdrant_url => local embedded
+    # mode (single writer = the API server process). These two are deliberately
+    # NOT in config.yaml: yaml values become constructor args and would shadow
+    # the .env credentials (constructor kwargs outrank env vars in
+    # pydantic-settings).
+    qdrant_url: str = ""
+    qdrant_api_key: str = ""
+    qdrant_timeout: float = 60.0  # per-request timeout (seconds) for cloud
 
     # ---- retrieval ----
     top_k: int = 8
@@ -125,9 +134,14 @@ class Settings(BaseSettings):
     def ensure_dirs(self) -> None:
         for d in (self.corpus_dir, self.pages_dir, self.manifests_dir):
             d.mkdir(parents=True, exist_ok=True)
-        if self.qdrant_path:
+        if self.qdrant_path and not self.is_cloud:
             self.qdrant_path.mkdir(parents=True, exist_ok=True)
         self.hf_cache.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def is_cloud(self) -> bool:
+        """True when running against a hosted Qdrant cluster."""
+        return bool(self.qdrant_url)
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -135,6 +149,7 @@ class Settings(BaseSettings):
             "text_embed_model": self.text_embed_model,
             "device": self.resolved_device,
             "collection": self.collection,
+            "qdrant": "cloud" if self.is_cloud else "local",
             "generation_mode": self.generation_mode,
             "generation_model": self.omniroute_model,
             "generation_base_url": self.omniroute_base_url,

@@ -21,6 +21,9 @@ vectordb:
   colpali_dim: 128
   dense_dim: 1024
   distance: Dot
+  # Hosted Qdrant? Do NOT put qdrant_url / qdrant_api_key here - yaml values
+  # become constructor args and would shadow the .env credentials. Instead add
+  # QDRANT_URL + QDRANT_API_KEY to .env (values are secrets, see .env.example).
 
 retrieval:
   top_k: 8

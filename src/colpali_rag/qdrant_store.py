@@ -3,10 +3,12 @@
 One collection "docs" with three vector views per page-point:
   - colpali : multi-vector (per image-patch, 128d) -> late-interaction MaxSim
   - dense   : BGE-M3 dense (1024d)
-  - sparse  : BGE-M3 sparse (SPLADE-style)
+  - sparse  : BGE-M3 sparse (SPLADE-style, stored as a named sparse vector)
 
-Qdrant runs in local (embedded) mode => a single writer process (the API server).
-All query/upsert code below is a thin, testable wrapper around qdrant-client.
+Backend: local (embedded) mode OR a hosted Qdrant cluster. Local mode means a
+single writer process (the API server); hosted mode (qdrant_url/qdrant_api_key
+from .env) gives normal concurrent access with server-side MaxSim. All
+query/upsert code below is a thin, testable wrapper around qdrant-client.
 """
 from __future__ import annotations
 
@@ -79,12 +81,26 @@ class QdrantStore:
 
     # -- client -----------------------------------------------------------
     @property
+    def is_cloud(self) -> bool:
+        """True when backed by a hosted Qdrant cluster."""
+        return self.settings.is_cloud
+
+    @property
     def client(self) -> QdrantClient:
         if self._client is None:
-            path = Path(self.settings.qdrant_path)
-            path.mkdir(parents=True, exist_ok=True)
-            log.info("Qdrant local mode at %s", path)
-            self._client = QdrantClient(path=str(path))
+            if self.is_cloud:
+                self._client = QdrantClient(
+                    url=self.settings.qdrant_url,
+                    api_key=self.settings.qdrant_api_key or None,
+                    timeout=self.settings.qdrant_timeout,
+                    check_compatibility=False,  # skip extra version round-trip + warning
+                )
+                log.info("Qdrant hosted mode: %s (collection %r)", self.settings.qdrant_url, self.settings.collection)
+            else:
+                path = Path(self.settings.qdrant_path)
+                path.mkdir(parents=True, exist_ok=True)
+                log.info("Qdrant local mode at %s", path)
+                self._client = QdrantClient(path=str(path))
         return self._client
 
     # -- schema -----------------------------------------------------------
@@ -92,23 +108,32 @@ class QdrantStore:
         coll = self.settings.collection
         if self.client.collection_exists(coll):
             return
-        self.client.create_collection(
-            collection_name=coll,
-            vectors_config={
-                "colpali": models.VectorParams(
-                    size=self.settings.colpali_dim,
-                    distance=models.Distance.DOT,
-                    multivector_config=models.MultiVectorConfig(
-                        comparator=models.MultiVectorComparator.MAX_SIM
+        try:
+            self.client.create_collection(
+                collection_name=coll,
+                vectors_config={
+                    "colpali": models.VectorParams(
+                        size=self.settings.colpali_dim,
+                        distance=models.Distance.DOT,
+                        multivector_config=models.MultiVectorConfig(
+                            comparator=models.MultiVectorComparator.MAX_SIM
+                        ),
                     ),
-                ),
-                "dense": models.VectorParams(
-                    size=self.settings.dense_dim,
-                    distance=models.Distance.DOT,
-                ),
-            },
-            sparse_vectors_config={"sparse": models.SparseVectorParams()},
-        )
+                    "dense": models.VectorParams(
+                        size=self.settings.dense_dim,
+                        distance=models.Distance.DOT,
+                    ),
+                },
+                sparse_vectors_config={"sparse": models.SparseVectorParams()},
+            )
+        except Exception as exc:  # pragma: no cover - infra dependent
+            where = "hosted" if self.is_cloud else "local"
+            raise RuntimeError(
+                f"Failed to create collection {coll!r} on {where} Qdrant. "
+                "Late-interaction (MaxSim) multivector collections require Qdrant "
+                ">= ~1.11 (cloud clusters tick this automatically). Original error: "
+                f"{exc}"
+            ) from exc
         log.info("Collection %r created (colpali multivector + dense + sparse)", coll)
 
     def count(self) -> int:
@@ -154,7 +179,6 @@ class QdrantStore:
         payload: dict[str, Any],
     ) -> None:
         pid = point_id(src, page)
-        sparse = {int(k): float(v) for k, v in sparse.items()}
         self.client.upsert(
             collection_name=self.settings.collection,
             points=[
@@ -163,8 +187,14 @@ class QdrantStore:
                     vector={
                         "colpali": colpali_vecs.astype(np.float32).tolist(),
                         "dense": dense_vec.astype(np.float32).tolist(),
+                        # real named sparse vector (queryable with using="sparse"),
+                        # NOT a payload field
+                        "sparse": models.SparseVector(
+                            indices=[int(k) for k in sparse.keys()],
+                            values=[float(v) for v in sparse.values()],
+                        ),
                     },
-                    payload={**payload, "sparse": sparse},
+                    payload=payload,
                 )
             ],
         )

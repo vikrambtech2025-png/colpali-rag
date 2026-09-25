@@ -14,7 +14,7 @@ goes to your OmniRoute kilo model.
 | Visual retrieval | `vidore/colqwen2-v1.0-hf` — per-patch 128-d vectors, Qdrant `late_interaction` MaxSim |
 | Text retrieval | `BAAI/bge-large-en-v1.5` dense (1024-d) + `Qdrant/bm25` sparse via fastembed |
 | Fusion | Reciprocal Rank Fusion (traced three-leg RRF keyed by source+page; the per-leg rankings are returned with every query for the UI inspector) |
-| Vector store | Qdrant local mode (single writer process = the API server) |
+| Vector store | Qdrant — local embedded, or your **hosted Qdrant Cloud** cluster (server-side MaxSim, concurrent reads/writes) |
 | Generation | Pluggable: `TextGenerator` (grounded in page text, free kilo model), `VisionGenerator` slot |
 | Tracked | per-ingest + per-eval runs in MLflow (`data/mlruns`) |
 
@@ -95,6 +95,29 @@ citations if the gateway is unreachable (the answer field reports the reason).
 `runtime.warmup_on_start: true` pre-loads the embedders at boot so the first
 query is instant — set it for demo boxes (already on in `config.yaml`).
 
+### Qdrant: local vs hosted
+
+By default Qdrant runs **local (embedded)** — the index lives under `data/qdrant`
+and the API server is the single writer (ingest only through the API). For a
+real deployment, point the app at your **hosted Qdrant cluster** instead:
+
+```
+# .env  (values are secrets - never commit them)
+QDRANT_URL=https://<cluster-id>.<region>.cloud.qdrant.io:6333
+QDRANT_API_KEY=<your-api-key>
+```
+
+With these set, the app creates the `docs` collection on your cluster with
+**server-side late-interaction MaxSim** for the ColPali leg plus dense and sparse
+vector fields, and normal concurrent reads/writes apply (the single-writer
+restriction is local-mode only). The collection is created automatically at
+startup, so a bad URL / API key fails the boot immediately with a clear error.
+`DELETE /v1/collection` wipes the cloud collection too (auth-gated if `API_KEY` set).
+
+Sparse vectors are stored as a proper Qdrant named sparse vector (queried with
+`using="sparse"`), not in the payload — re-ingest existing documents after
+upgrading to populate the sparse leg.
+
 ## Answer generation modes (`GENERATION_MODE` in `.env`)
 
 - `text` (default) — the configured LLM (OmniRoute gateway) answers from page text.
@@ -145,10 +168,13 @@ query -> same three legs -> RRF fusion -> top pages -> TextGenerator -> kilo LLM
 ```
 
 Notes:
-- **Single writer**: Qdrant runs in local mode inside the API process. Ingest PDFs
-  through `POST /v1/ingest` (or `ingest.ps1`), never a parallel CLI, to avoid
-  file locks. An offline CLI exists (`python -m colpali_rag.ingest`) for
-  batch-initializing an index before the server starts.
+- **Writer model**: local mode runs Qdrant embedded inside the API process (single
+  writer — ingest through `POST /v1/ingest` or `ingest.ps1`, never a parallel CLI,
+  to avoid file locks). Hosted mode (`QDRANT_URL`/`QDRANT_API_KEY` in `.env`) removes
+  the single-writer constraint: any number of app/CLI processes can read/write
+  concurrently. An offline CLI exists (`python -m colpali_rag.ingest`) for both modes.
+- **Late interaction**: server-side MaxSim is used everywhere the engine supports
+  multivector queries; embedded cores fall back to a numpy MaxSim sweep.
 - **GPU**: fits 6 GB VRAM fp16; switch `colpali_model` for larger cards
   (e.g. `vidore/colpali-v1.3`). `device=auto` picks CUDA when available.
 - **OCR**: `OCR_ENABLED=true` OCRs pages with no embedded text (rapidocr, local).

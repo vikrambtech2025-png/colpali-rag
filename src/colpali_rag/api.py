@@ -102,6 +102,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     runtime = AppRuntime(settings)
     app = FastAPI(title="ColPali RAG", version="0.1.0", description="Visual + hybrid document RAG")
     app.state.runtime = runtime
+    # Fail fast at boot: create the collection (idempotent) so a mistyped cloud
+    # URL / API key / collection name surfaces immediately, not on first query.
+    try:
+        runtime.store.ensure_collection()
+    except Exception as exc:  # pragma: no cover - infra dependent
+        log.error("Vector store setup failed: %s", exc)
+        raise
     api = APIRouter(prefix="/v1")
 
     def require_auth():
