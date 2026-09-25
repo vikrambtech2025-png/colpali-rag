@@ -1,0 +1,41 @@
+{
+  "description": "Retrieval baseline for colpali-rag (Qdrant local mode, RRF-60 hybrid). Dev set: evals/golden_queries.json (10 hand-checked queries over 8 indexed pages across 3 PDFs). All scores are hit@k / mrr@10 / ndcg@5 with binary relevance against the gold (src, page).",
+  "generated": "2026-09-25",
+  "models": {
+    "colpali": "ColQwen2 (visual, late-interaction MaxSim)",
+    "text": "BGE-M3 dense + sparse (hybrid leg)",
+    "fusion": "RRF k=60"
+  },
+  "top_k": 10,
+  "modes": {
+    "hybrid": {
+      "n": 10,
+      "hit@3": 1.0,
+      "hit@5": 1.0,
+      "hit@10": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@5": 1.0
+    },
+    "colpali": {
+      "n": 10,
+      "hit@3": 1.0,
+      "hit@5": 1.0,
+      "hit@10": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@5": 1.0
+    },
+    "dense": {
+      "n": 10,
+      "hit@3": 1.0,
+      "hit@5": 1.0,
+      "hit@10": 1.0,
+      "mrr@10": 0.9,
+      "ndcg@5": 0.926
+    }
+  },
+  "notes": [
+    "hybrid == colpali == perfect MRR/NDCG; dense text leg is the weakest (2 golds at rank 1, chart/figure-heavy queries). RRF fusion lifts every query to rank 0.",
+    "Scores are ceiling-limited: 8 indexed pages is a small corpus; grow the dev set toward 30-100 queries before relying on the absolute numbers.",
+    "Per-query detail (ranks, hits) is archived under evals/results/<mode>.json. Re-run with: uv run python -m colpali_rag.eval --mode hybrid --out evals/results/hybrid.json"
+  ]
+}

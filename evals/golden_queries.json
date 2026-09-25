@@ -1,5 +1,10 @@
 [
   {
+    "query": "What was the company total revenue in Q3 2025?",
+    "expected_src": "Q3-2025-Market-Intelligence-Report.pdf",
+    "expected_page": 1
+  },
+  {
     "query": "What does the revenue chart show for each product line?",
     "expected_src": "Q3-2025-Market-Intelligence-Report.pdf",
     "expected_page": 2
@@ -20,13 +25,28 @@
     "expected_page": 3
   },
   {
+    "query": "What risk is noted in the competitive landscape section?",
+    "expected_src": "Q3-2025-Market-Intelligence-Report.pdf",
+    "expected_page": 4
+  },
+  {
+    "query": "How are attention mechanisms grouped in the transformer field notes?",
+    "expected_src": "Transformer-Architecture-Field-Notes.pdf",
+    "expected_page": 1
+  },
+  {
     "query": "What does the attention gate figure show about cross-attention during decoding?",
     "expected_src": "Transformer-Architecture-Field-Notes.pdf",
     "expected_page": 2
   },
   {
-    "query": "What risk is noted in the competitive landscape section?",
-    "expected_src": "Q3-2025-Market-Intelligence-Report.pdf",
-    "expected_page": 4
+    "query": "What code activates the Global Widgets API?",
+    "expected_src": "Global-Widgets-Onboarding-Guide.pdf",
+    "expected_page": 1
+  },
+  {
+    "query": "What should I do if API activation fails?",
+    "expected_src": "Global-Widgets-Onboarding-Guide.pdf",
+    "expected_page": 2
   }
 ]

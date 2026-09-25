@@ -97,12 +97,30 @@ citations if the gateway is unreachable (the answer field reports the reason).
 ## Evaluation
 
 ```powershell
-uv run python -m colpali_rag.eval            # hybrid mode
-uv run python -m colpali_rag.eval --mode colpali   # visual leg alone
+uv run python -m colpali_rag.eval                      # hybrid mode
+uv run python -m colpali_rag.eval --mode colpali       # visual leg alone
+uv run python -m colpali_rag.eval --mode dense         # text-dense leg alone
+uv run python -m colpali_rag.eval --out evals/results/hybrid.json   # save results JSON
 ```
 
-Golden queries live in `evals/golden_queries.json`; metrics: hit@5, MRR, NDCG@5.
+Golden queries live in `evals/golden_queries.json` (10 hand-checked queries over
+the demo corpus). Each query is retrieved **once** at `--top-k` (default 10) and
+metrics are computed from that single ranked list: a recall curve **hit@3 / hit@5 /
+hit@10**, **MRR@10**, and **NDCG@5** (binary relevance against the gold `src`+`page`).
 Runs are logged to MLflow (`data/mlruns`).
+
+Baseline (committed in `evals/baseline.json`, re-run with the commands above):
+
+| mode   | hit@3 | hit@5 | hit@10 | mrr@10 | ndcg@5 |
+|--------|-------|-------|--------|--------|--------|
+| hybrid | 1.000 | 1.000 | 1.000  | 1.000  | 1.000  |
+| colpali| 1.000 | 1.000 | 1.000  | 1.000  | 1.000  |
+| dense  | 1.000 | 1.000 | 1.000  | 0.900  | 0.926  |
+
+Findings: hybrid matches the perfect visual-only retrieval — RRF fusion lifts the
+weaker dense-text leg (2/10 golds at rank 1 on chart/figure queries) to rank 0.
+Scores are ceiling-limited by the small 8-page corpus; grow `golden_queries.json`
+toward 30–100 queries before relying on the absolute numbers.
 
 ## Architecture
 

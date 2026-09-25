@@ -1,0 +1,71 @@
+{
+  "n": 10.0,
+  "mode": "dense",
+  "hit@3": 1.0,
+  "hit@5": 1.0,
+  "hit@10": 1.0,
+  "mrr@10": 0.9,
+  "ndcg@5": 0.9261859507142916,
+  "per_query": [
+    {
+      "query": "What was the company total revenue in Q3 2025?",
+      "expected": "Q3-2025-Market-Intelligence-Report.pdf p1",
+      "rank": 0,
+      "hit@5": true
+    },
+    {
+      "query": "What does the revenue chart show for each product line?",
+      "expected": "Q3-2025-Market-Intelligence-Report.pdf p2",
+      "rank": 1,
+      "hit@5": true
+    },
+    {
+      "query": "What was the growth rate of the Services product line?",
+      "expected": "Q3-2025-Market-Intelligence-Report.pdf p2",
+      "rank": 0,
+      "hit@5": true
+    },
+    {
+      "query": "How does solid-state battery energy density compare with LFP?",
+      "expected": "Q3-2025-Market-Intelligence-Report.pdf p3",
+      "rank": 0,
+      "hit@5": true
+    },
+    {
+      "query": "What is the cost per kWh of NMC 811 chemistry?",
+      "expected": "Q3-2025-Market-Intelligence-Report.pdf p3",
+      "rank": 0,
+      "hit@5": true
+    },
+    {
+      "query": "What risk is noted in the competitive landscape section?",
+      "expected": "Q3-2025-Market-Intelligence-Report.pdf p4",
+      "rank": 0,
+      "hit@5": true
+    },
+    {
+      "query": "How are attention mechanisms grouped in the transformer field notes?",
+      "expected": "Transformer-Architecture-Field-Notes.pdf p1",
+      "rank": 0,
+      "hit@5": true
+    },
+    {
+      "query": "What does the attention gate figure show about cross-attention during decoding?",
+      "expected": "Transformer-Architecture-Field-Notes.pdf p2",
+      "rank": 0,
+      "hit@5": true
+    },
+    {
+      "query": "What code activates the Global Widgets API?",
+      "expected": "Global-Widgets-Onboarding-Guide.pdf p1",
+      "rank": 1,
+      "hit@5": true
+    },
+    {
+      "query": "What should I do if API activation fails?",
+      "expected": "Global-Widgets-Onboarding-Guide.pdf p2",
+      "rank": 0,
+      "hit@5": true
+    }
+  ]
+}

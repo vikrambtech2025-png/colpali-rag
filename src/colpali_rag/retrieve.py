@@ -44,3 +44,10 @@ class Retriever:
         q_colpali = self.colpali.embed_query(query)
         pages = self.store.query_colpali(q_colpali, k)
         return RetrievalResult(query=query, pages=pages)
+
+    def retrieve_dense_only(self, query: str, top_k: int | None = None) -> RetrievalResult:
+        """Dense-text leg alone — handy for eval of the text retriever."""
+        k = top_k or self.settings.top_k
+        q_dense, _ = self.text.embed_query(query)
+        pages = self.store.query_dense(q_dense, k)
+        return RetrievalResult(query=query, pages=pages)

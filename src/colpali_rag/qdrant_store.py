@@ -202,6 +202,12 @@ class QdrantStore:
             return [self._payload_to_result(h) for h in hits]
         return self._query_colpali_numpy(query_vecs, limit)
 
+    def query_dense(self, dense_vec: np.ndarray, limit: int) -> list[PageResult]:
+        """Dense-text leg alone (used by eval to compare retrieval legs)."""
+        if not self.client.collection_exists(self.settings.collection):
+            return []
+        return self._query_plain(dense_vec.astype(np.float32), "dense", limit)
+
     def _query_colpali_numpy(self, query_vecs: np.ndarray, limit: int) -> list[PageResult]:
         """MaxSim over the whole collection (fallback for embedded dev cores)."""
         q = query_vecs.astype(np.float32)  # (n_tokens, D)
