@@ -77,11 +77,15 @@ gateway for generation:
 OMNIRoute_BASE_URL=http://localhost:8080/v1
 OMNIRoute_API_KEY=local
 OMNIRoute_MODEL=kilo
+OMNIRoute_VISION_MODEL=openai-compatible-kilo/inclusionai/ling-3.0-flash-vl:free
 ```
 
-`OMNIRoute_MODEL` must be a model id the gateway actually serves — check with
+`OMNIRoute_MODEL` (and `OMNIRoute_VISION_MODEL` when `GENERATION_MODE=vision`)
+must be model ids the gateway actually serves — check with
 `GET <OMNIRoute_BASE_URL>/models`. Verified working on the OmniRoute `cfp`
-pool: `cfp/zai-org/glm-5.2` and `cfp/deepseek-ai/deepseek-v4-pro-0813`.
+pool: `cfp/zai-org/glm-5.2` and `cfp/deepseek-ai/deepseek-v4-pro-0813`;
+verified vision-capable: `openai-compatible-kilo/inclusionai/ling-3.0-flash-vl:free`
+and `openai-compatible-kilo/qwen/qwen3-vl-8b-instruct`.
 Any OpenAI-compatible endpoint works (Ollama `http://localhost:11434/v1`,
 LM Studio `http://localhost:1234/v1`), not just OmniRoute.
 
@@ -168,7 +172,9 @@ reverse proxy (Caddy/nginx) in front for internet exposure.
   extractive answers** so you always get an answer with citations.
 - `extractive` — fully local, no-LLM answers: the most query-relevant sentences
   are pulled straight from the retrieved page text. Zero dependencies, works offline.
-- `vision` — stub slot for a future vision-LLM answerer (falls back to extractive).
+- `vision` — answers from the **actual page images** (charts, tables, layouts)
+  via `OMNIRoute_VISION_MODEL` on the gateway. Falls back to extractive when the
+  gateway is down or the page images are missing.
 
 ## Evaluation
 
@@ -208,6 +214,7 @@ queries before relying on the absolute numbers.
 PDF -> render pages (PyMuPDF) -> ColPali per-patch vectors -> Qdrant "colpali" (MaxSim)
      -> text layer (embedded text / OCR) -> BGE-M3 dense + sparse -> Qdrant
 query -> same three legs -> RRF fusion -> top pages -> TextGenerator -> kilo LLM -> answer
+                     (or VisionGenerator -> OMNIRoute_VISION_MODEL reads the page images)
 ```
 
 Notes:
@@ -221,8 +228,9 @@ Notes:
 - **GPU**: fits 6 GB VRAM fp16; switch `colpali_model` for larger cards
   (e.g. `vidore/colpali-v1.3`). `device=auto` picks CUDA when available.
 - **OCR**: `OCR_ENABLED=true` OCRs pages with no embedded text (rapidocr, local).
-- **Vision answering**: set `GENERATION_MODE=vision` and implement
-  `VisionGenerator.generate` to feed page images to a vision LLM.
+- **Vision answering** (`GENERATION_MODE=vision`): the top retrieved pages'
+  rendered PNGs are sent to `OMNIRoute_VISION_MODEL` as image data URIs, so the
+  answers read the true chart axes / table cells that text extraction can mangle.
 
 ## Tests
 

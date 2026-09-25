@@ -176,3 +176,93 @@ def test_retry_config_defaults() -> None:
     assert s.generation_retries == 2
     assert s.generation_retry_delay == 2.0
     assert s.generation_retries == s.generation_retries + 0  # sanity, field is int
+
+
+# ---- VisionGenerator (stubbed openai client, real page-image files) ----
+
+def _stub_vision_openai(monkeypatch) -> list[dict]:
+    calls: list[tuple[dict, str]] = []
+    captured: list[dict] = []
+
+    class FakeCompletions:
+        @staticmethod
+        def create(*args, **kwargs):
+            captured.append(kwargs)
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+                content="The chart shows 2.5 dB link margin at 540 km."
+            ))])
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.chat = FakeChat()
+
+    monkeypatch.setattr("openai.OpenAI", FakeClient)
+    return captured
+
+
+def _vision_pages(pages_dir, *images: str) -> list[PageResult]:
+    from pathlib import Path
+
+    pages: list[PageResult] = []
+    for i, img in enumerate(images):
+        path = Path(img)
+        file = pages_dir / path
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(b"\x89PNG\r\n\x1a\nfake-png-bytes")
+        page = i + 1
+        pages.append(PageResult(
+            score=0.9 - i * 0.1, src="rpt.pdf", page=page,
+            text="", image=f"rpt.pdf/page-{page}.png",
+        ))
+    return pages
+
+
+def test_vision_generator_sends_page_images_as_data_uris(monkeypatch, tmp_path) -> None:
+    captured = _stub_vision_openai(monkeypatch)
+    pages_dir = tmp_path / "pages"
+    pages = _vision_pages(pages_dir, "rpt.pdf/page-1.png", "rpt.pdf/page-2.png")
+    settings = Settings(
+        generation_mode="vision", pages_dir=pages_dir, generation_top_pages=2,
+        omniroute_vision_model="vision-test", llm_timeout=5,
+        generation_retries=0, generation_retry_delay=0.0,
+    )
+    out = VisionGenerator(settings).generate("What does the chart show?", pages)
+    assert out.backend == "vision"
+    assert out.model == "vision-test"
+    assert "540 km" in out.answer
+    assert out.citations
+    assert len(captured) == 1
+    assert captured[0]["model"] == "vision-test"
+    content = captured[0]["messages"][1]["content"]
+    images = [c for c in content if c["type"] == "image_url"]
+    texts = [c for c in content if c["type"] == "text"]
+    assert len(images) == 2  # one data URI per retrieved page image
+    assert all(c["image_url"]["url"].startswith("data:image/png;base64,") for c in images)
+    assert "QUESTION:" in texts[0]["text"]
+
+
+def test_vision_generator_skips_missing_images(monkeypatch, tmp_path) -> None:
+    captured = _stub_vision_openai(monkeypatch)
+    pages_dir = tmp_path / "pages"
+    pages = _vision_pages(pages_dir, "rpt.pdf/page-1.png")  # page-2 file intentionally absent
+    pages.append(PageResult(score=0.7, src="rpt.pdf", page=2, text="", image="rpt.pdf/page-2.png"))
+    settings = Settings(
+        generation_mode="vision", pages_dir=pages_dir, generation_top_pages=3,
+        omniroute_vision_model="vision-test", generation_retries=0,
+    )
+    out = VisionGenerator(settings).generate("chart?", pages)
+    assert out.backend == "vision"
+    content = captured[0]["messages"][1]["content"]
+    images = [c for c in content if c["type"] == "image_url"]
+    assert len(images) == 1  # missing file skipped, still answers from what exists
+
+
+def test_vision_generator_no_images_is_honest(tmp_path) -> None:
+    settings = Settings(generation_mode="vision", pages_dir=tmp_path / "pages", generation_top_pages=2)
+    pages = [PageResult(score=0.9, src="rpt.pdf", page=1, text="hello world")]
+    out = VisionGenerator(settings).generate("what?", pages)
+    assert out.answer == ""
+    assert "no page images" in out.note

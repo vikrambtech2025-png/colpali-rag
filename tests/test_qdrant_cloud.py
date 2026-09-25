@@ -37,7 +37,7 @@ class _FakeClient:
 def test_sparse_stored_as_named_vector_not_payload(tmp_path) -> None:
     """Late-interaction collections need a real named sparse vector for
     using='sparse' queries; payload storage silently returned nothing."""
-    s = Settings(qdrant_path=tmp_path / "qdrant")
+    s = Settings(qdrant_path=tmp_path / "qdrant", qdrant_url="")
     store = QdrantStore(s)
     fake = _FakeClient()
     store._client = fake  # bypass the real client for this pure-shape test

@@ -14,6 +14,7 @@ from colpali_rag.config import Settings
 def _make_client(tmp_path, **overrides) -> TestClient:
     settings = Settings(
         qdrant_path=tmp_path / "qdrant",
+        qdrant_url="",  # hermetic: never inherit the hosted-cluster .env creds
         pages_dir=tmp_path / "pages",
         hf_cache=tmp_path / "hf",
         manifests_dir=tmp_path / "manifests",

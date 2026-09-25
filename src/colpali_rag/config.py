@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     omniroute_base_url: str = "http://localhost:8080/v1"
     omniroute_api_key: str = "local"
     omniroute_model: str = "kilo"
+    # vision-capable model used when generation_mode="vision" (answers read the
+    # actual page images). Override via OMNIRoute_VISION_MODEL in .env - verify
+    # the id exists on the gateway with GET <base>/models.
+    omniroute_vision_model: str = "openai-compatible-kilo/inclusionai/ling-3.0-flash-vl:free"
     generation_mode: str = "text"  # text | extractive | vision
     generation_top_pages: int = 3
     excerpt_chars: int = 16000

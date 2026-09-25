@@ -5,19 +5,22 @@
   token-free pipeline: embeddings, ColPali and OCR are all local.
 - ExtractiveGenerator: local no-LLM answerer that pulls the most query-relevant
   sentences straight out of the retrieved page text. Zero dependencies.
-- VisionGenerator: stub slot for feeding the actual page image to a vision LLM.
+- VisionGenerator: answers from the actual page images (charts, tables, layouts)
+  via a vision-capable model on the OmniRoute gateway.
 - generate_with_fallback(): runs the configured generator and, when it produces
   no answer (unreachable gateway / unimplemented backend), falls back to the
   extractive answerer so retrieval always returns something useful.
 """
 from __future__ import annotations
 
+import base64
 import logging
 import math
 import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any
 
 from .config import Settings
 from .retrieve import PageResult
@@ -136,15 +139,107 @@ class TextGenerator(Generator):
 
 
 class VisionGenerator(Generator):
-    """Slot for visual answering (feed page image to a vision LLM). NotImplemented until a
-    vision model is configured — retrieval + citations still work in the meantime."""
+    """Answer from the actual page images via a vision-capable gateway model.
+
+    The top retrieved pages' rendered PNGs (data/pages/<src>.pdf/page-NNN.png)
+    are base64 data URIs in an OpenAI-style multimodal message; the model reads
+    the true layout - charts, tables, axes - that text extraction can mangle.
+    Falls back through generate_with_fallback() when the gateway is down.
+    """
 
     name = "vision"
 
+    PROMPT = (
+        "You are an exact-answer assistant that reads document pages from images.\n"
+        "Answer the question using ONLY the attached page images (they show the exact "
+        "charts, tables and layouts). Quote numbers, axis labels and ranges precisely. "
+        "If the images cannot answer it, say so. Cite pages inline by copying the exact "
+        "bracketed source label verbatim, e.g. "
+        "[NanoSat-Constellation-Design-Spec.pdf (page 3)] - do not invent or shorten it.\n\n"
+        "QUESTION: {question}\n\nANSWER:"
+    )
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
     def generate(self, query: str, pages: list[PageResult]) -> Generation:
-        raise NotImplementedError(
-            "VisionGenerator is a stub: configure a vision-capable LLM to answer from page images."
+        from openai import OpenAI
+
+        model = self.settings.omniroute_vision_model
+        citations = self.citations_for(pages, self.settings.generation_top_pages)
+        content: list[dict[str, Any]] = [{"type": "text", "text": self.PROMPT.format(question=query)}]
+        images = 0
+        for p in pages[: self.settings.generation_top_pages]:
+            data_uri = self._image_data_uri(p)
+            if data_uri is None:
+                continue
+            content.append({"type": "image_url", "image_url": {"url": data_uri}})
+            images += 1
+        if images == 0:
+            return Generation(
+                answer="",
+                backend=self.name,
+                note="no page images available to feed the vision model",
+                citations=citations,
+            )
+        attempts = max(1, self.settings.generation_retries + 1)
+        last_reason = ""
+        for attempt in range(attempts):
+            try:
+                client = OpenAI(
+                    base_url=self.settings.omniroute_base_url,
+                    api_key=self.settings.omniroute_api_key or "local",
+                    timeout=self.settings.llm_timeout,
+                )
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": "You answer from document images only."},
+                        {"role": "user", "content": content},
+                    ],
+                    temperature=self.settings.temperature,
+                    max_tokens=self.settings.max_tokens,
+                    stream=False,
+                )
+                answer = (resp.choices[0].message.content or "").strip()
+                if answer:
+                    return Generation(
+                        answer=answer,
+                        model=model,
+                        backend="vision",
+                        citations=citations,
+                    )
+                last_reason = "the gateway returned an empty reply"
+                log.warning("Vision generation attempt %d: %s", attempt + 1, last_reason)
+            except Exception as exc:  # keep retrieval usable even if the gateway is down
+                last_reason = str(exc) or type(exc).__name__
+                low = last_reason.lower()
+                if "sign in" in low or "authentication" in low or "expired" in low:
+                    last_reason = (
+                        f"gateway provider auth problem (likely needs re-sign-in in the "
+                        f"OmniRoute dashboard): {last_reason}"
+                    )
+                log.warning("Vision generation attempt %d failed: %s", attempt + 1, last_reason)
+            if attempt < attempts - 1:
+                time.sleep(self.settings.generation_retry_delay)
+        return Generation(
+            answer="",
+            backend=self.name,
+            note=f"vision backend unreachable ({attempts} attempt(s)): {last_reason}",
+            citations=citations,
         )
+
+    def _image_data_uri(self, page: PageResult) -> str | None:
+        try:
+            path = self.settings.pages_dir / page.image
+            if not path.is_file():
+                log.debug("page image missing: %s", path)
+                return None
+            b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+            return f"data:image/png;base64,{b64}"
+        except Exception as exc:  # pragma: no cover
+            log.debug("could not read page image: %s", exc)
+            return None
 
 
 class ExtractiveGenerator(Generator):
@@ -241,7 +336,7 @@ def generate_with_fallback(generator: Generator, query: str, pages: list[PageRes
 
 def get_generator(settings: Settings) -> Generator:
     if settings.generation_mode == "vision":
-        return VisionGenerator()
+        return VisionGenerator(settings)
     if settings.generation_mode == "extractive":
         return ExtractiveGenerator(settings)
     return TextGenerator(settings)
