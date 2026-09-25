@@ -64,14 +64,26 @@ class ColPaliEmbedder:
                 model_id,
                 self.settings.resolved_device,
             )
-            self._model = model_cls.from_pretrained(
-                model_id,
-                torch_dtype=torch.float16,
-                device_map=self.settings.resolved_device,
-                trust_remote_code=True,
-            )
-            self._model.eval()
-            self._processor = proc_cls.from_pretrained(model_id, trust_remote_code=True)
+            try:
+                model = model_cls.from_pretrained(
+                    model_id,
+                    torch_dtype=torch.float16,
+                    device_map=self.settings.resolved_device,
+                    trust_remote_code=True,
+                )
+                # Build both halves locally, then commit: if the processor
+                # download fails mid-load (flaky HF network), the embedder must
+                # NOT be left as "_model set, _processor None" — that poisoned
+                # state makes every later query 500 until restart. On failure we
+                # reset, so the next call retries the whole load from scratch.
+                processor = proc_cls.from_pretrained(model_id, trust_remote_code=True)
+            except Exception:
+                self._model = None
+                self._processor = None
+                raise
+            model.eval()
+            self._model = model
+            self._processor = processor
             log.info("ColPali embedder ready: %s", model_id)
 
     def unload(self) -> None:
@@ -158,15 +170,25 @@ class TextEmbedder:
             from fastembed import SparseTextEmbedding, TextEmbedding
 
             log.info("Loading dense %s", self.settings.text_embed_model)
-            self._dense = TextEmbedding(
-                model_name=self.settings.text_embed_model,
-                cache_dir=str(self.settings.hf_cache),
-            )
-            log.info("Loading sparse %s", self.settings.text_sparse_model)
-            self._sparse = SparseTextEmbedding(
-                model_name=self.settings.text_sparse_model,
-                cache_dir=str(self.settings.hf_cache),
-            )
+            try:
+                # Atomic like ColPaliEmbedder: commit both legs only after both
+                # succeeded, so a partial load (dense ok, sparse download fails)
+                # leaves a clean state and the next call retries from scratch.
+                dense = TextEmbedding(
+                    model_name=self.settings.text_embed_model,
+                    cache_dir=str(self.settings.hf_cache),
+                )
+                log.info("Loading sparse %s", self.settings.text_sparse_model)
+                sparse = SparseTextEmbedding(
+                    model_name=self.settings.text_sparse_model,
+                    cache_dir=str(self.settings.hf_cache),
+                )
+            except Exception:
+                self._dense = None
+                self._sparse = None
+                raise
+            self._dense = dense
+            self._sparse = sparse
             log.info("Text embedder ready")
 
     @property

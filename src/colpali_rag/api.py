@@ -1,4 +1,4 @@
-"""FastAPI application: query + ingest endpoints, health, minimal chat UI.
+"""FastAPI application: query + ingest endpoints, health, chat UI with document upload.
 
 Runs the single Qdrant writer process (local mode). Ingestion must therefore
 go through this API (POST /v1/ingest), not through a separate CLI, when the
@@ -121,12 +121,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "image": page.image if page.image else None,
         }
 
-    @api.get("/health", response_model=dict)
-    def health():
-        return runtime.health()
-
-    @api.post("/query", response_model=QueryResponse)
-    def query(req: QueryRequest, _: Any = Depends(require_auth())):
+    def _run_query(req: QueryRequest) -> QueryResponse:
         t0 = time.perf_counter()
         result = runtime.retriever.retrieve(req.query, req.top_k)
         pages = result.pages
@@ -144,6 +139,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             response.citations = gen.citations or response.citations
         runtime._timings["query"] = time.perf_counter() - t0
         return response
+
+    @api.get("/health", response_model=dict)
+    def health():
+        return runtime.health()
+
+    @api.post("/query", response_model=QueryResponse)
+    def query(req: QueryRequest, _: Any = Depends(require_auth())):
+        try:
+            return _run_query(req)
+        except HTTPException:
+            raise
+        except Exception as exc:  # keep the chat UI informed instead of a bare 500
+            log.exception("query failed")
+            raise HTTPException(status_code=502, detail=f"query failed: {exc}") from exc
 
     @api.post("/ingest", response_model=IngestStatus, status_code=202)
     async def ingest(file: UploadFile, _: Any = Depends(require_auth())):
@@ -197,6 +206,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception as exc:  # pragma: no cover
             return {"collection": settings.collection, "points": 0, "note": f"{exc}"}
 
+    @api.get("/sources", response_model=list[dict[str, Any]])
+    def sources():
+        """Indexed documents: [{'src': filename, 'pages': n}, ...]."""
+        return runtime.store.list_sources()
+
     app.include_router(api)
 
     # ---- UI + static page images --------------------------------------
@@ -218,66 +232,178 @@ UI_HTML = """<!doctype html>
 <style>
   :root { color-scheme: dark; --bg:#0b0f14; --panel:#131a22; --line:#223042; --txt:#dbe6f2; --mut:#7f93a8; --acc:#3ba55d; }
   * { box-sizing: border-box; }
-  body { margin:0; font-family: system-ui, Segoe UI, sans-serif; background:var(--bg); color:var(--txt); }
-  header { padding:14px 22px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; }
-  header h1 { font-size:17px; margin:0; } header span { color:var(--mut); font-size:12px; }
-  main { max-width:920px; margin:18px auto 40px; padding:0 16px; }
-  #ask { display:flex; gap:8px; margin-bottom:14px; }
-  #ask input { flex:1; background:var(--panel); border:1px solid var(--line); color:var(--txt); padding:11px 13px; border-radius:8px; font-size:14px; }
-  #ask button { background:var(--acc); border:0; color:#04110a; font-weight:700; padding:11px 18px; border-radius:8px; cursor:pointer; }
-  #ask button:disabled { opacity:.5; cursor:wait; }
-  #status { color:var(--mut); font-size:12px; min-height:18px; margin-bottom:12px; }
-  #answer { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; white-space:pre-wrap; line-height:1.55; display:none; }
-  #answer h3 { margin:0 0 8px; font-size:13px; color:var(--mut); text-transform:uppercase; letter-spacing:.08em; }
-  #pages { display:grid; grid-template-columns:repeat(auto-fill, minmax(230px,1fr)); gap:12px; margin-top:18px; }
-  .page { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
-  .page img { width:100%; display:block; border-bottom:1px solid var(--line); background:#fff; }
-  .page div { padding:9px 11px; font-size:12px; }
-  .page b { color:var(--acc); }
-  .mut { color:var(--mut); font-size:12px; margin-top:10px; }
+  body { margin:0; font-family: system-ui, Segoe UI, sans-serif; background:var(--bg); color:var(--txt); height:100vh; display:flex; flex-direction:column; }
+  header { padding:12px 22px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; }
+  header h1 { font-size:17px; margin:0; } header .tag { color:var(--mut); font-size:12px; }
+  #stats { margin-left:auto; color:var(--mut); font-size:12px; }
+  #upload { padding:12px 22px; border-bottom:1px solid var(--line); display:flex; flex-direction:column; gap:8px; }
+  #drop { border:1px dashed var(--line); border-radius:10px; padding:14px; text-align:center; color:var(--mut); font-size:13px; cursor:pointer; transition:border-color .15s; }
+  #drop.over { border-color:var(--acc); color:var(--txt); }
+  #uploadbar { display:flex; gap:8px; align-items:center; }
+  #file { display:none; }
+  #pick { background:var(--panel); border:1px solid var(--line); color:var(--txt); padding:8px 14px; border-radius:8px; cursor:pointer; font-size:13px; }
+  #upbtn { background:var(--acc); border:0; color:#04110a; font-weight:700; padding:8px 16px; border-radius:8px; cursor:pointer; }
+  #upbtn:disabled { opacity:.5; cursor:wait; }
+  #upstatus { color:var(--mut); font-size:12px; flex:1; }
+  #sources { display:flex; flex-wrap:wrap; gap:6px; font-size:12px; }
+  .chip { background:var(--panel); border:1px solid var(--line); color:var(--mut); padding:3px 9px; border-radius:999px; }
+  #chat { flex:1; overflow-y:auto; padding:18px 22px; display:flex; flex-direction:column; gap:14px; }
+  .msg { max-width:820px; display:flex; flex-direction:column; }
+  .msg.user { align-self:flex-end; align-items:flex-end; }
+  .msg.bot { align-self:flex-start; align-items:flex-start; }
+  .bubble { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; white-space:pre-wrap; line-height:1.55; font-size:14px; }
+  .msg.user .bubble { background:#1c2b23; border-color:#2c4a3a; }
+  .meta { margin-top:8px; font-size:11px; color:var(--mut); }
+  .mut { color:var(--mut); font-size:12px; margin-top:8px; }
   .empty { color:var(--mut); font-size:13px; }
+  .thumbs { display:flex; gap:10px; overflow-x:auto; margin-top:10px; padding-bottom:4px; }
+  .thumbs .thumb { flex:0 0 auto; }
+  .thumbs img { height:110px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer; display:block; }
+  .thumbs .cap { font-size:10px; color:var(--mut); margin-top:3px; max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #composer { border-top:1px solid var(--line); padding:14px 22px; display:flex; gap:8px; align-items:flex-end; }
+  #q { flex:1; background:var(--panel); border:1px solid var(--line); color:var(--txt); padding:11px 13px; border-radius:8px; font-size:14px; resize:none; font-family:inherit; }
+  #go { background:var(--acc); border:0; color:#04110a; font-weight:700; padding:11px 18px; border-radius:8px; cursor:pointer; }
+  #go:disabled { opacity:.5; cursor:wait; }
 </style>
 </head>
 <body>
-<header><h1>ColPali RAG</h1><span>visual + hybrid document retrieval</span></header>
-<main>
-  <div id="ask"><input id="q" placeholder="Ask about your documents… e.g. what does the revenue chart show?" />
-  <button id="go" onclick="ask()">Ask</button></div>
-  <div id="status"></div>
-  <div id="answer"></div>
-  <div id="pages"></div>
-</main>
+<header>
+  <h1>ColPali RAG</h1><span class="tag">visual + hybrid document retrieval</span>
+  <span id="stats">— docs</span>
+</header>
+<section id="upload">
+  <div id="drop">Drop PDFs here or click to choose — they are indexed and you can ask about them right away</div>
+  <div id="uploadbar">
+    <input type="file" id="file" accept=".pdf" multiple>
+    <button id="pick" onclick="document.getElementById('file').click()">choose files</button>
+    <button id="upbtn" onclick="uploadFiles()">upload</button>
+    <span id="upstatus"></span>
+  </div>
+  <div id="sources"></div>
+</section>
+<main id="chat"></main>
+<section id="composer">
+  <textarea id="q" rows="2" placeholder="Ask about your documents… e.g. what does the revenue chart show?"></textarea>
+  <button id="go" onclick="ask()">Ask</button>
+</section>
 <script>
+const $ = id => document.getElementById(id);
+const esc = s => (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function addMsg(role, html) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + role;
+  d.innerHTML = html;
+  $('chat').appendChild(d);
+  $('chat').scrollTop = $('chat').scrollHeight;
+  return d;
+}
+
+async function refreshInfo() {
+  try {
+    const s = await (await fetch('/v1/sources')).json();
+    const pts = await (await fetch('/v1/collection')).json();
+    const docs = s.length, points = pts.points || 0;
+    $('stats').textContent = docs + ' doc' + (docs === 1 ? '' : 's') + ' · ' + points + ' pages';
+    $('sources').innerHTML = s.length ? s.map(x =>
+      '<span class="chip">' + esc(x.src) + ' · ' + x.pages + 'p</span>').join('')
+      : '<span class="chip">no documents indexed yet</span>';
+    if (!docs && !$('chat').children.length) {
+      addMsg('bot', '<div class="bubble"><span class="empty">Welcome. Upload a PDF above (or drop it anywhere on the box) and then ask me anything about it.</span></div>');
+    }
+  } catch (e) { $('stats').textContent = 'server starting…'; }
+}
+
 async function ask() {
-  const q = document.getElementById('q').value.trim();
+  const q = $('q').value.trim();
   if (!q) return;
-  const go = document.getElementById('go'), st = document.getElementById('status'),
-        ans = document.getElementById('answer'), pages = document.getElementById('pages');
-  go.disabled = true; st.textContent = 'retrieving…'; pages.innerHTML = ''; ans.style.display = 'none';
+  const go = $('go');
+  addMsg('user', '<div class="bubble">' + esc(q) + '</div>');
+  $('q').value = '';
+  go.disabled = true;
+  const waitEl = addMsg('bot', '<div class="bubble"><span class="empty">retrieving…</span></div>');
   try {
     const r = await fetch('/v1/query', { method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ query: q, top_k: 6, generate: true }) });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (!r.ok) {
+      const errBody = await r.json().catch(() => ({}));
+      throw new Error('HTTP ' + r.status + (errBody.detail ? ' — ' + errBody.detail : '') + (r.status === 401 ? ' (server requires an API key the web UI cannot supply)' : ''));
+    }
     const d = await r.json();
-    const srcLabel = (d.generation_backend ? d.generation_backend + (d.generation_model ? ' · ' + d.generation_model : '') : '');
-    st.textContent = 'retrieved ' + d.pages.length + ' pages · generation: ' + (d.answer ? (srcLabel || 'ok') : ('off — ' + (d.generation_note||'backend not configured')));
-    ans.style.display = 'block';
-    const esc = s => (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    const srcLabel = d.generation_backend ? esc(d.generation_backend + (d.generation_model ? ' · ' + d.generation_model : '')) : '';
     const sources = (d.citations && d.citations.length) ? '<div class="mut">sources: ' + esc(d.citations.join(' · ')) + '</div>' : '';
-    const noteHtml = (d.generation_note && d.answer) ? '<div class="empty" style="margin-top:6px">' + esc(d.generation_note) + '</div>' : '';
-    ans.innerHTML = '<h3>answer</h3>' + (d.answer && d.answer !== '""' ? esc(d.answer) : '<span class="empty">' + esc(d.generation_note || 'No answer (no pages retrieved).') + '</span>') + sources + noteHtml;
-    if (!d.pages.length) { pages.innerHTML = '<div class="empty">No pages retrieved — ingest documents first.</div>'; return; }
-    d.pages.forEach(p => {
-      const c = document.createElement('div'); c.className='page';
-      c.innerHTML = (p.image? '<img src="/assets/' + p.image + '" loading="lazy">' : '') +
-        '<div><b>' + p.src + ' · p' + p.page + '</b> · ' + p.score.toFixed(3) +
-        '<br><span class="empty">' + (p.text ? p.text.slice(0,140) : 'no text layer') + '…</span></div>';
-      pages.appendChild(c);
-    });
-  } catch (e) { st.textContent = 'error: ' + e.message; }
-  finally { go.disabled = false; }
+    const note = d.generation_note ? '<div class="mut">' + esc(d.generation_note) + '</div>' : '';
+    const meta = d.answer ? '<div class="meta">answered by ' + (srcLabel || 'retrieval only') + '</div>' : '';
+    const thumbs = (d.pages && d.pages.length) ? '<div class="thumbs">' + d.pages.map(p =>
+        '<div class="thumb">' +
+        (p.image ? '<img src="/assets/' + esc(p.image) + '" loading="lazy" title="' + esc((p.text || '').slice(0, 180)) + '" onclick="window.open(this.src)">' : '') +
+        '<div class="cap">' + esc(p.src) + ' · p' + p.page + ' · ' + p.score.toFixed(3) + '</div></div>').join('')
+      : '';
+    const ans = (d.answer && d.answer !== '""') ? esc(d.answer)
+      : '<span class="empty">' + esc(d.generation_note || 'No answer (no pages retrieved — upload a PDF first).') + '</span>';
+    waitEl.innerHTML = '<div class="bubble">' + ans + meta + sources + note + '</div>' + thumbs;
+  } catch (e) {
+    waitEl.innerHTML = '<div class="bubble"><span class="empty">error: ' + esc(e.message) + '</span></div>';
+  } finally {
+    go.disabled = false;
+    $('q').focus();
+  }
 }
-document.getElementById('q').addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
+
+async function uploadFiles(picked) {
+  const files = Array.from(picked || $('file').files || []);
+  if (!files.length) return;
+  const btn = $('upbtn'), st = $('upstatus');
+  btn.disabled = true;
+  for (const f of files) {
+    if (!f.name.toLowerCase().endsWith('.pdf')) { st.textContent = f.name + ' skipped (only PDF files are supported)'; continue; }
+    st.textContent = 'uploading ' + f.name + '…';
+    try {
+      const fd = new FormData(); fd.append('file', f);
+      const r = await fetch('/v1/ingest', { method:'POST', body: fd });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) { st.textContent = f.name + ' failed: ' + (body.detail || ('HTTP ' + r.status)); continue; }
+      await pollJob(body.job_id, f.name);
+    } catch (e) { st.textContent = f.name + ' failed: ' + e.message; }
+  }
+  $('file').value = '';
+  btn.disabled = false;
+  refreshInfo();
+}
+
+async function pollJob(id, name) {
+  for (;;) {
+    await sleep(1200);
+    let j;
+    try { j = await (await fetch('/v1/ingest/' + id)).json(); }
+    catch (e) { continue; }
+    if (j.status === 'done' || j.status === 'partial') {
+      const rep = j.report || {};
+      $('upstatus').textContent = name + ' indexed · ' + rep.pages + ' pages in ' + rep.duration_s + 's' +
+        ((j.status === 'partial' && rep.errors && rep.errors.length) ? ' (' + esc(rep.errors.join('; ')) + ')' : '') +
+        ' — you can ask about it now.';
+      return;
+    }
+    if (j.status === 'error') {
+      const rep = j.report || {};
+      $('upstatus').textContent = name + ' failed: ' + ((rep.errors || ['unknown error']).join('; '));
+      return;
+    }
+  }
+}
+
+const drop = $('drop');
+drop.addEventListener('click', () => $('file').click());
+['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => {
+  const files = Array.from(e.dataTransfer.files || []);
+  if (files.length) uploadFiles(files);
+});
+$('file').addEventListener('change', () => uploadFiles());
+$('q').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); } });
+refreshInfo();
 </script>
 </body>
 </html>

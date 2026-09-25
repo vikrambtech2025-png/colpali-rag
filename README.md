@@ -43,10 +43,16 @@ the answer is grounded in the retrieved page with `[file.pdf (page N)]` citation
 |---|---|
 | `POST /v1/query` | `{query, top_k, generate}` → answer + citations + retrieved pages (with page images) |
 | `POST /v1/ingest` | multipart PDF upload → async job, poll `GET /v1/ingest/{job_id}` |
+| `GET /v1/sources` | indexed documents: `[{"src": filename, "pages": n}, ...]` |
 | `GET /v1/health` | qdrant + models + generator status |
 | `GET /v1/collection` | point count |
 | `DELETE /v1/collection` | wipe index (auth required if `API_KEY` set) |
 | `GET /docs` | OpenAPI/Swagger |
+
+The web UI at `/` is a chat surface: drag & drop or pick PDFs to upload
+(asynchronous jobs poll `GET /v1/ingest/{job_id}`), then ask questions. Answers
+show the generation backend/model, a `sources:` line with citations, and
+clickable page thumbnails of the retrieved pages.
 
 ## Config
 

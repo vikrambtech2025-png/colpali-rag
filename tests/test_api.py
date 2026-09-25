@@ -80,6 +80,14 @@ def test_index_page_served(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "ColPali RAG" in r.text
+    assert 'id="chat"' in r.text
+    assert "/v1/ingest" in r.text
+
+
+def test_sources_empty(client):
+    r = client.get("/v1/sources")
+    assert r.status_code == 200
+    assert r.json() == []
 
 
 def test_ingest_requires_pdf(client):

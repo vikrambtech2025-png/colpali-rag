@@ -94,6 +94,33 @@ class QdrantStore:
             return 0
         return self.client.count(self.settings.collection, exact=True).count
 
+    def list_sources(self) -> list[dict[str, Any]]:
+        """Distinct document sources (filename) with page counts, sorted by name.
+
+        Payload-only scroll — no vectors loaded, so it is cheap even for big
+        collections.
+        """
+        if not self.client.collection_exists(self.settings.collection):
+            return []
+        counts: dict[str, int] = {}
+        offset: Any = None
+        while True:
+            points, next_offset = self.client.scroll(
+                collection_name=self.settings.collection,
+                limit=1000,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for pt in points:
+                src = (pt.payload or {}).get("src")
+                if src:
+                    counts[src] = counts.get(src, 0) + 1
+            if next_offset is None:
+                break
+            offset = next_offset
+        return [{"src": s, "pages": c} for s, c in sorted(counts.items())]
+
     # -- writes -----------------------------------------------------------
     def upsert_page(
         self,
