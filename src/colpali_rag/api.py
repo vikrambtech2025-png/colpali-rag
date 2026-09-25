@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from .config import Settings, configure_hf_env, get_settings
 from .embeddings import ColPaliEmbedder, TextEmbedder
-from .generator import Generation, get_generator
+from .generator import Generation, generate_with_fallback, get_generator
 from .ingest import IngestPipeline, IngestReport
 from .qdrant_store import QdrantStore
 from .retrieve import Retriever
@@ -136,7 +136,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             citations=[p.citation for p in pages[: settings.generation_top_pages]],
         )
         if req.generate and pages:
-            gen: Generation = runtime.generator.generate(req.query, pages)
+            gen: Generation = generate_with_fallback(runtime.generator, req.query, pages)
             response.answer = gen.answer
             response.generation_model = gen.model
             response.generation_backend = f"{gen.backend}"

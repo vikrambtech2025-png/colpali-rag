@@ -27,7 +27,7 @@ retrieval:
   rrf_k: 60
 
 generation:
-  mode: text            # text | vision
+  mode: text            # text | extractive | vision (extractive = local no-LLM answers)
   top_pages: 3
   excerpt_chars: 16000
   temperature: 0.2

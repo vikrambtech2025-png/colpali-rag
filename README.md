@@ -68,6 +68,15 @@ LM Studio `http://localhost:1234/v1`), not just OmniRoute.
 Retrieval/ingest tunables live in `config.yaml`. The app still serves retrieval +
 citations if the gateway is unreachable (the answer field reports the reason).
 
+## Answer generation modes (`GENERATION_MODE` in `.env`)
+
+- `text` (default) — the configured LLM (OmniRoute gateway) answers from page text.
+  If the gateway is unreachable, the API **automatically falls back to local
+  extractive answers** so you always get an answer with citations.
+- `extractive` — fully local, no-LLM answers: the most query-relevant sentences
+  are pulled straight from the retrieved page text. Zero dependencies, works offline.
+- `vision` — stub slot for a future vision-LLM answerer (falls back to extractive).
+
 ## Evaluation
 
 ```powershell

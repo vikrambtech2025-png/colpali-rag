@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     omniroute_base_url: str = "http://localhost:8080/v1"
     omniroute_api_key: str = "local"
     omniroute_model: str = "kilo"
-    generation_mode: str = "text"  # text | vision
+    generation_mode: str = "text"  # text | extractive | vision
     generation_top_pages: int = 3
     excerpt_chars: int = 16000
     temperature: float = 0.2
