@@ -313,22 +313,71 @@ class ExtractiveGenerator(Generator):
         return Generation(answer=answer, backend=self.name, citations=citations)
 
 
+# ---- grounded-answer guard (RAG Doctor: never ship invented citations) ----
+# Gateway models occasionally reply with a refusal ("I don't see any page
+# images") or with citations pointing at pages that were never retrieved.
+# Both are ungrounded -> route to the local extractive answerer instead.
+_REFUSAL_RE = re.compile(
+    r"i don'?t (see|have|know|understand)|no (attached )?page images|"
+    r"please provide (the )?(document|page)|i need to (know|see|have)|"
+    r"(i |we )?cannot answer|can'?t answer|unable to answer|"
+    r"i '?m (not |un)able to|not enough information|no information (is )?available|"
+    r"you didn'?t (attach|provide|send)",
+    re.IGNORECASE,
+)
+_CIT_RE = re.compile(r"([A-Za-z0-9][\w.\- ]*?\.pdf)\s*\(page\s*(\d+)\)", re.IGNORECASE)
+
+
+def _normalize_src(src: str) -> str:
+    src = re.sub(r"\s+", " ", src).strip().lower()
+    if "/" in src:
+        src = src.rsplit("/", 1)[-1]
+    return src
+
+
+def _claimed_citations(answer: str) -> set[tuple[str, int]]:
+    claimed: set[tuple[str, int]] = set()
+    for m in _CIT_RE.finditer(answer):
+        try:
+            claimed.add((_normalize_src(m.group(1)), int(m.group(2))))
+        except ValueError:
+            continue
+    return claimed
+
+
+def _is_grounded(answer: str, pages: list[PageResult]) -> bool:
+    """True when the answer shows no refusal wording and every citation it
+    makes points at a page that was actually retrieved."""
+    if _REFUSAL_RE.search(answer):
+        return False
+    claimed = _claimed_citations(answer)
+    if not claimed:
+        return True  # nothing claimable -> cannot verify further, pass through
+    available = {(_normalize_src(p.src), p.page) for p in pages}
+    return claimed <= available
+
+
 def generate_with_fallback(generator: Generator, query: str, pages: list[PageResult]) -> Generation:
     """Run the configured generator; if it yields no answer (gateway unreachable,
-    unimplemented backend, exception), answer extraction-locally instead so the
-    API always returns a usable answer when pages were retrieved."""
+    unimplemented backend, exception) or an ungrounded answer (refusal wording /
+    invented citations), answer extraction-locally instead so the API always
+    returns a usable, grounded answer when pages were retrieved."""
     if isinstance(generator, ExtractiveGenerator):
         return generator.generate(query, pages)
     try:
         result = generator.generate(query, pages)
     except Exception as exc:  # e.g. VisionGenerator stub raising NotImplementedError
         result = Generation(answer="", backend=generator.name, note=f"{generator.name} generator failed: {exc}")
-    if result.answer:
+    if result.answer and _is_grounded(result.answer, pages):
         return result
     fallback = ExtractiveGenerator(getattr(generator, "settings", None))
     fb = fallback.generate(query, pages)
     if fb.answer:
-        reason = result.note or f"{generator.name} produced no answer"
+        if result.answer:
+            snippet = " ".join(result.answer.split())[:90]
+            reason = f"{generator.name} answer rejected as ungrounded ({snippet}...)"
+        else:
+            reason = result.note or f"{generator.name} produced no answer"
         fb.note = f"{reason} | fallback: extractive"
         return fb
     return result

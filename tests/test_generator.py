@@ -11,6 +11,7 @@ from colpali_rag.generator import (
     Generation,
     TextGenerator,
     VisionGenerator,
+    _is_grounded,
     generate_with_fallback,
     get_generator,
 )
@@ -117,7 +118,9 @@ def test_get_generator_routing() -> None:
     assert isinstance(get_generator(Settings(generation_mode="extractive")), ExtractiveGenerator)
     assert isinstance(get_generator(Settings(generation_mode="text")), TextGenerator)
     assert isinstance(get_generator(Settings(generation_mode="vision")), VisionGenerator)
-    assert isinstance(get_generator(Settings()), TextGenerator)
+    # default mode comes from .env/config.yaml (env-dependent); whatever it resolves
+    # to, routing must map it to a real backend
+    assert isinstance(get_generator(Settings()), (ExtractiveGenerator, TextGenerator, VisionGenerator))
 
 
 # ---- TextGenerator retry behavior (stubbed openai client) ----
@@ -266,3 +269,52 @@ def test_vision_generator_no_images_is_honest(tmp_path) -> None:
     out = VisionGenerator(settings).generate("what?", pages)
     assert out.answer == ""
     assert "no page images" in out.note
+
+
+# ---- grounded-answer guard (RAG Doctor: never ship invented citations) ----
+
+def test_ungrounded_refusal_falls_back(monkeypatch, settings) -> None:
+    _stub_openai(
+        monkeypatch,
+        ["I don't see any attached page images in this conversation. Please provide the document."],
+    )
+    out = generate_with_fallback(TextGenerator(settings), "Revenue?", PAGES)
+    assert out.backend == "extractive"
+    assert "ungrounded" in out.note
+    assert "fallback" in out.note
+    assert "$37M" in out.answer
+
+
+def test_hallucinated_citation_falls_back(monkeypatch, settings) -> None:
+    # cites page 9 of a 3-page list -> page was never retrieved
+    _stub_openai(monkeypatch, ["Revenue was $99B [Q3-2025.pdf (page 9)]."])
+    out = generate_with_fallback(TextGenerator(settings), "Revenue?", PAGES)
+    assert out.backend == "extractive"
+    assert "ungrounded" in out.note
+    assert "$37M" in out.answer
+
+
+def test_grounded_gateway_answer_passes(monkeypatch, settings) -> None:
+    _stub_openai(monkeypatch, ["Revenue grew to $37M in Q3 2025 [Q3-2025.pdf (page 1)]."])
+    out = generate_with_fallback(TextGenerator(settings), "Revenue?", PAGES)
+    assert out.backend == "text"
+    assert out.note == ""
+    assert "$37M" in out.answer
+
+
+def test_hallucinated_other_doc_falls_back(monkeypatch, settings) -> None:
+    # cites a document that was never retrieved at all
+    _stub_openai(monkeypatch, ["Revenue grew [Phantom-Doc.pdf (page 2)]."])
+    out = generate_with_fallback(TextGenerator(settings), "Revenue?", PAGES)
+    assert out.backend == "extractive"
+    assert "ungrounded" in out.note
+
+
+def test_is_grounded_helpers() -> None:
+    assert _is_grounded("Revenue grew [Q3-2025.pdf (page 1)].", PAGES)
+    assert not _is_grounded("Revenue grew [Q3-2025.pdf (page 9)].", PAGES)
+    assert not _is_grounded("Revenue grew [Q3-2025.pdf (page 2)].", PAGES)  # page exists but not retrieved
+    assert not _is_grounded("Revenue grew [Phantom-Doc.pdf (page 1)].", PAGES)
+    assert not _is_grounded("I don't see any page images.", PAGES)
+    assert not _is_grounded("Please provide the document and I will answer.", PAGES)
+    assert _is_grounded("Plain answer with no citations.", PAGES)
