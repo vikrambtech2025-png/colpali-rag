@@ -65,6 +65,17 @@ pool: `cfp/zai-org/glm-5.2` and `cfp/deepseek-ai/deepseek-v4-pro-0813`.
 Any OpenAI-compatible endpoint works (Ollama `http://localhost:11434/v1`,
 LM Studio `http://localhost:1234/v1`), not just OmniRoute.
 
+The gateway's free pools can expire or return empty replies. The app retries
+(`generation_retries`, `generation_retry_delay`) and falls back to local
+extractive answers when the gateway is down. To see which models are actually
+alive right now:
+
+```powershell
+uv run python scripts/check_gateway.py                 # families + sample probe
+uv run python scripts/check_gateway.py --model cfp/zai-org/glm-5.2
+uv run python scripts/check_gateway.py --probe kilo-auto
+```
+
 Retrieval/ingest tunables live in `config.yaml`. The app still serves retrieval +
 citations if the gateway is unreachable (the answer field reports the reason).
 

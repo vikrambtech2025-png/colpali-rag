@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -72,7 +73,8 @@ class TextGenerator(Generator):
     PROMPT = (
         "You are an exact-answer assistant grounded strictly in the provided document excerpts.\n"
         "Answer the question using ONLY the excerpts below. If the excerpts cannot answer it, say so.\n"
-        "Cite pages inline like [file.pdf (page N)].\n\n"
+        "Cite pages inline by copying the exact bracketed source label verbatim, e.g. "
+        "[Q3-2025-Market-Intelligence-Report.pdf (page 1)] — do not invent or shorten the label.\n\n"
         "EXCERPTS:\n{excerpts}\n\n"
         "QUESTION: {question}\n\nANSWER:"
     )
@@ -85,37 +87,52 @@ class TextGenerator(Generator):
 
         excerpts = build_excerpt(pages, self.settings.generation_top_pages, self.settings.excerpt_chars)
         prompt = self.PROMPT.format(excerpts=excerpts, question=query)
-        try:
-            client = OpenAI(
-                base_url=self.settings.omniroute_base_url,
-                api_key=self.settings.omniroute_api_key or "local",
-                timeout=self.settings.llm_timeout,
-            )
-            resp = client.chat.completions.create(
-                model=self.settings.omniroute_model,
-                messages=[
-                    {"role": "system", "content": "You answer from documents only."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=self.settings.temperature,
-                max_tokens=self.settings.max_tokens,
-                stream=False,
-            )
-            answer = (resp.choices[0].message.content or "").strip()
-            return Generation(
-                answer=answer,
-                model=self.settings.omniroute_model,
-                backend="text",
-                citations=self.citations_for(pages, self.settings.generation_top_pages),
-            )
-        except Exception as exc:  # keep retrieval usable even if the gateway is down
-            log.warning("Generation failed: %s", exc)
-            return Generation(
-                answer="",
-                backend="text",
-                note=f"generation backend unreachable: {exc}",
-                citations=self.citations_for(pages, self.settings.generation_top_pages),
-            )
+        attempts = max(1, self.settings.generation_retries + 1)
+        last_reason = ""
+        for attempt in range(attempts):
+            try:
+                client = OpenAI(
+                    base_url=self.settings.omniroute_base_url,
+                    api_key=self.settings.omniroute_api_key or "local",
+                    timeout=self.settings.llm_timeout,
+                )
+                resp = client.chat.completions.create(
+                    model=self.settings.omniroute_model,
+                    messages=[
+                        {"role": "system", "content": "You answer from documents only."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=self.settings.temperature,
+                    max_tokens=self.settings.max_tokens,
+                    stream=False,
+                )
+                answer = (resp.choices[0].message.content or "").strip()
+                if answer:
+                    return Generation(
+                        answer=answer,
+                        model=self.settings.omniroute_model,
+                        backend="text",
+                        citations=self.citations_for(pages, self.settings.generation_top_pages),
+                    )
+                last_reason = "the gateway returned an empty reply"
+                log.warning("Generation attempt %d: %s", attempt + 1, last_reason)
+            except Exception as exc:  # keep retrieval usable even if the gateway is down
+                last_reason = str(exc) or type(exc).__name__
+                low = last_reason.lower()
+                if "sign in" in low or "authentication" in low or "expired" in low:
+                    last_reason = (
+                        f"gateway provider auth problem (likely needs re-sign-in in the "
+                        f"OmniRoute dashboard): {last_reason}"
+                    )
+                log.warning("Generation attempt %d failed: %s", attempt + 1, last_reason)
+            if attempt < attempts - 1:
+                time.sleep(self.settings.generation_retry_delay)
+        return Generation(
+            answer="",
+            backend="text",
+            note=f"generation backend unreachable ({attempts} attempt(s)): {last_reason}",
+            citations=self.citations_for(pages, self.settings.generation_top_pages),
+        )
 
 
 class VisionGenerator(Generator):

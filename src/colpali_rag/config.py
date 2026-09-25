@@ -79,6 +79,8 @@ class Settings(BaseSettings):
     temperature: float = 0.2
     max_tokens: int = 700
     llm_timeout: float = 90.0
+    generation_retries: int = 2       # extra attempts when the gateway errors/returns empty
+    generation_retry_delay: float = 2.0  # seconds between retries
 
     # ---- API ----
     api_host: str = "127.0.0.1"

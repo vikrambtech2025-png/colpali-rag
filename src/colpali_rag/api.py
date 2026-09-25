@@ -234,6 +234,7 @@ UI_HTML = """<!doctype html>
   .page img { width:100%; display:block; border-bottom:1px solid var(--line); background:#fff; }
   .page div { padding:9px 11px; font-size:12px; }
   .page b { color:var(--acc); }
+  .mut { color:var(--mut); font-size:12px; margin-top:10px; }
   .empty { color:var(--mut); font-size:13px; }
 </style>
 </head>
@@ -258,9 +259,13 @@ async function ask() {
       body: JSON.stringify({ query: q, top_k: 6, generate: true }) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
-    st.textContent = 'retrieved ' + d.pages.length + ' pages · generation: ' + (d.answer ? 'ok' : ('off — ' + (d.generation_note||'backend not configured')));
+    const srcLabel = (d.generation_backend ? d.generation_backend + (d.generation_model ? ' · ' + d.generation_model : '') : '');
+    st.textContent = 'retrieved ' + d.pages.length + ' pages · generation: ' + (d.answer ? (srcLabel || 'ok') : ('off — ' + (d.generation_note||'backend not configured')));
     ans.style.display = 'block';
-    ans.innerHTML = '<h3>answer</h3>' + (d.answer && d.answer !== '""' ? d.answer.replace(/&/g,'&amp;').replace(/</g,'&lt;') : '<span class="empty">' + (d.generation_note || 'No answer (no pages retrieved).') + '</span>');
+    const esc = s => (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    const sources = (d.citations && d.citations.length) ? '<div class="mut">sources: ' + esc(d.citations.join(' · ')) + '</div>' : '';
+    const noteHtml = (d.generation_note && d.answer) ? '<div class="empty" style="margin-top:6px">' + esc(d.generation_note) + '</div>' : '';
+    ans.innerHTML = '<h3>answer</h3>' + (d.answer && d.answer !== '""' ? esc(d.answer) : '<span class="empty">' + esc(d.generation_note || 'No answer (no pages retrieved).') + '</span>') + sources + noteHtml;
     if (!d.pages.length) { pages.innerHTML = '<div class="empty">No pages retrieved — ingest documents first.</div>'; return; }
     d.pages.forEach(p => {
       const c = document.createElement('div'); c.className='page';

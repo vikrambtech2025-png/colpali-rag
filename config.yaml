@@ -1,8 +1,11 @@
-# ColPali RAG tunables. CLI overrides beat config.yaml; .env beats defaults.
+# ColPali RAG tunables.
+# Each key must match the Settings field name in src/colpali_rag/config.py
+# (e.g. generation_mode, not mode). Precedence: CLI/init args > config.yaml
+# > .env > defaults.
 model:
-  colpali_id: "vidore/colqwen2-v1.0-hf"  # visual retriever (late interaction, MaxSim; fits 6GB VRAM fp16)
-  text_embed_id: "BAAI/bge-large-en-v1.5"  # dense text embeddings (1024d, fastembed)
-  text_sparse_id: "Qdrant/bm25"             # sparse text leg (fastembed BM25, CPU)
+  colpali_model: "vidore/colqwen2-v1.0-hf"  # visual retriever (late interaction, MaxSim; fits 6GB VRAM fp16)
+  text_embed_model: "BAAI/bge-large-en-v1.5"  # dense text embeddings (1024d, fastembed)
+  text_sparse_model: "Qdrant/bm25"             # sparse text leg (fastembed BM25, CPU)
   device: "auto"                       # auto | cuda | cpu
   embed_batch_size: 2
 
@@ -27,12 +30,14 @@ retrieval:
   rrf_k: 60
 
 generation:
-  mode: text            # text | extractive | vision (extractive = local no-LLM answers)
-  top_pages: 3
+  generation_mode: text            # text | extractive | vision (extractive = local no-LLM answers)
+  generation_top_pages: 3
   excerpt_chars: 16000
   temperature: 0.2
   max_tokens: 700
+  generation_retries: 2            # extra gateway attempts on error/empty reply
+  generation_retry_delay: 2.0      # seconds between retries
 
 ocr:
-  enabled: false        # true = OCR pages with no embedded text (rapidocr)
+  ocr_enabled: false        # true = OCR pages with no embedded text (rapidocr)
   min_text_chars: 40

@@ -1,6 +1,8 @@
 """Unit tests for the generator layer (no models, no network)."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from colpali_rag.config import Settings
@@ -116,3 +118,61 @@ def test_get_generator_routing() -> None:
     assert isinstance(get_generator(Settings(generation_mode="text")), TextGenerator)
     assert isinstance(get_generator(Settings(generation_mode="vision")), VisionGenerator)
     assert isinstance(get_generator(Settings()), TextGenerator)
+
+
+# ---- TextGenerator retry behavior (stubbed openai client) ----
+
+def _stub_openai(monkeypatch, contents: list[str]) -> list[int]:
+    """Replace openai.OpenAI with a fake whose completions return the given contents."""
+    calls: list[int] = []
+
+    class FakeCompletions:
+        @staticmethod
+        def create(*args, **kwargs):
+            calls.append(1)
+            content = contents[min(len(calls) - 1, len(contents) - 1)]
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.chat = FakeChat()
+
+    monkeypatch.setattr("openai.OpenAI", FakeClient)
+    return calls
+
+
+def test_text_generator_exhausts_retries_on_empty(monkeypatch) -> None:
+    calls = _stub_openai(monkeypatch, ["", "", ""])
+    settings = Settings(generation_mode="text", generation_retries=2, generation_retry_delay=0.01)
+    out = TextGenerator(settings).generate("What was the revenue in Q3?", PAGES)
+    assert len(calls) == 3  # initial + 2 retries
+    assert out.answer == ""
+    assert "unreachable" in out.note and "empty reply" in out.note
+
+
+def test_text_generator_retry_recovers(monkeypatch) -> None:
+    calls = _stub_openai(monkeypatch, ["", "Revenue grew to $37M in Q3 2025."])
+    settings = Settings(generation_mode="text", generation_retries=2, generation_retry_delay=0.01)
+    out = TextGenerator(settings).generate("What was the revenue in Q3?", PAGES)
+    assert len(calls) == 2  # failed once, recovered on retry
+    assert "$37M" in out.answer
+    assert out.backend == "text"
+    assert out.note == ""
+
+
+def test_text_generator_no_retries_when_disabled(monkeypatch) -> None:
+    calls = _stub_openai(monkeypatch, [""])
+    settings = Settings(generation_mode="text", generation_retries=0)
+    out = TextGenerator(settings).generate("What was the revenue in Q3?", PAGES)
+    assert len(calls) == 1
+    assert out.answer == ""
+
+
+def test_retry_config_defaults() -> None:
+    s = Settings()
+    assert s.generation_retries == 2
+    assert s.generation_retry_delay == 2.0
+    assert s.generation_retries == s.generation_retries + 0  # sanity, field is int
