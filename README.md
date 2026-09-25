@@ -59,6 +59,12 @@ OMNIRoute_API_KEY=local
 OMNIRoute_MODEL=kilo
 ```
 
+`OMNIRoute_MODEL` must be a model id the gateway actually serves — check with
+`GET <OMNIRoute_BASE_URL>/models`. Verified working on the OmniRoute `cfp`
+pool: `cfp/zai-org/glm-5.2` and `cfp/deepseek-ai/deepseek-v4-pro-0813`.
+Any OpenAI-compatible endpoint works (Ollama `http://localhost:11434/v1`,
+LM Studio `http://localhost:1234/v1`), not just OmniRoute.
+
 Retrieval/ingest tunables live in `config.yaml`. The app still serves retrieval +
 citations if the gateway is unreachable (the answer field reports the reason).
 

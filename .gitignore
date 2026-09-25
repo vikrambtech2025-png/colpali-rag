@@ -19,6 +19,7 @@ data/qdrant/
 data/qdrant-*/
 data/hf-cache/
 data/manifests/
+data/mlruns/
 models/
 runs/
 
