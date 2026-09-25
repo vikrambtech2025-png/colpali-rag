@@ -118,6 +118,12 @@ With these set, the app creates the `docs` collection on your cluster with
 vector fields, and normal concurrent reads/writes apply (the single-writer
 restriction is local-mode only). The collection is created automatically at
 startup, so a bad URL / API key fails the boot immediately with a clear error.
+
+Sizing on the free Qdrant Cloud tier (1 node, 1 GiB RAM / 4 GiB disk): a demo
+corpus of ~16 pages uses tens of MB — plenty of headroom. ColPali is the
+memory hog (each page stores ~1k × 128-d patch vectors), so budget roughly
+1 MB RAM per page and keep the index in the hundreds of pages on a free node
+before upgrading.
 `DELETE /v1/collection` wipes the cloud collection too (auth-gated if `API_KEY` set).
 
 Sparse vectors are stored as a proper Qdrant named sparse vector (queried with
