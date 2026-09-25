@@ -32,10 +32,32 @@ class PageResult:
     text: str = ""
     image: str = ""  # relative path under pages_dir
     payload: dict[str, Any] = field(default_factory=dict)
+    # per-leg retrieval scores for the fusion inspector: {"colpali": ..., "dense": ..., "sparse": ...}
+    leg: dict[str, float] = field(default_factory=dict)
+    legs: list[str] = field(default_factory=list)  # which legs retrieved this page
 
     @property
     def citation(self) -> str:
         return f"{self.src} (page {self.page})"
+
+
+@dataclass
+class RetrievalTrace:
+    """Timings + per-leg ranked lists for the retrieval inspector UI."""
+
+    encode_ms: float = 0.0
+    colpali_ms: float = 0.0
+    dense_ms: float = 0.0
+    sparse_ms: float = 0.0
+    fusion_ms: float = 0.0
+    colpali: list[PageResult] = field(default_factory=list)
+    dense: list[PageResult] = field(default_factory=list)
+    sparse: list[PageResult] = field(default_factory=list)
+    fused: list[PageResult] = field(default_factory=list)
+
+    @property
+    def total_ms(self) -> float:
+        return self.encode_ms + self.colpali_ms + self.dense_ms + self.sparse_ms + self.fusion_ms
 
 
 def rrf_merge(lists: Sequence[Sequence[int]], k: int = 60) -> dict[int, float]:
@@ -236,55 +258,81 @@ class QdrantStore:
         return results[:limit]
 
     def hybrid_query(self, colpali_vecs: np.ndarray, dense_vec: np.ndarray, sparse: dict[int, float], top_k: int) -> list[PageResult]:
-        """Fuse three legs with RRF. Uses Qdrant server fusion when supported."""
+        """Fuse three legs with RRF and return the top-k pages."""
+        pages, _trace = self.hybrid_query_traced(colpali_vecs, dense_vec, sparse, top_k)
+        return pages
+
+    def hybrid_query_traced(
+        self, colpali_vecs: np.ndarray, dense_vec: np.ndarray, sparse: dict[int, float], top_k: int
+    ) -> tuple[list[PageResult], RetrievalTrace]:
+        """Run the three legs separately, fuse with RRF, and return the fusion
+        trace (timings + per-leg rankings) alongside the top-k pages.
+
+        Fusion keys are (src, page) so a point retrieved by multiple legs
+        contributes to one fused result (the old id()-keyed merge could emit
+        duplicate PageResults for the same point).
+        """
+        from time import perf_counter
+
+        trace = RetrievalTrace()
         coll = self.settings.collection
         if not self.client.collection_exists(coll):
-            return []
-        prefetch = [
-            models.Prefetch(query=self._colpali_query(colpali_vecs), using="colpali", limit=self.settings.colpali_prefetch),
-            models.Prefetch(query=dense_vec.astype(np.float32).tolist(), using="dense", limit=self.settings.dense_prefetch),
-            models.Prefetch(
-                query=models.SparseVector(indices=list(sparse.keys()), values=list(sparse.values())),
-                using="sparse",
-                limit=self.settings.sparse_prefetch,
-            ),
-        ]
-        try:
-            scored = self.client.query_points(
-                collection_name=coll,
-                prefetch=prefetch,
-                query=models.FusionQuery(fusion=models.Fusion.RRF),
-                limit=top_k,
-                with_payload=True,
-            ).points
-            return [self._payload_to_result(h) for h in scored]
-        except Exception as exc:  # pragma: no cover
-            log.warning("Server fusion failed (%s); falling back to python RRF", exc)
-            return self.hybrid_query_python(colpali_vecs, dense_vec, sparse, top_k)
+            return [], trace
 
-    def hybrid_query_python(
-        self, colpali_vecs: np.ndarray, dense_vec: np.ndarray, sparse: dict[int, float], top_k: int
-    ) -> list[PageResult]:
-        """Python RRF fallback: three independent queries, merged locally."""
+        t = perf_counter()
         colpali_hits = self.query_colpali(colpali_vecs, self.settings.colpali_prefetch)
-        dense_hits = [
-            h for h in self._query_plain(dense_vec, "dense", self.settings.dense_prefetch)
-        ]
-        sparse_hits = [
-            h for h in self._query_plain(models.SparseVector(indices=list(sparse.keys()), values=list(sparse.values())), "sparse", self.settings.sparse_prefetch)
-        ]
-        merged = rrf_merge(
-            [[id(h) for h in colpali_hits], [id(h) for h in dense_hits], [id(h) for h in sparse_hits]],
-            k=self.settings.rrf_k,
+        trace.colpali_ms = (perf_counter() - t) * 1000.0
+        trace.colpali = colpali_hits
+
+        t = perf_counter()
+        dense_hits = self.query_dense(dense_vec, self.settings.dense_prefetch)
+        trace.dense_ms = (perf_counter() - t) * 1000.0
+        trace.dense = dense_hits
+
+        t = perf_counter()
+        sparse_hits = self._query_plain(
+            models.SparseVector(indices=list(sparse.keys()), values=list(sparse.values())),
+            "sparse",
+            self.settings.sparse_prefetch,
         )
-        by_id = {id(h): h for h in [*colpali_hits, *dense_hits, *sparse_hits]}
-        ordered = sorted(merged.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
+        trace.sparse_ms = (perf_counter() - t) * 1000.0
+        trace.sparse = sparse_hits
+
+        t = perf_counter()
+        legs = {"colpali": colpali_hits, "dense": dense_hits, "sparse": sparse_hits}
+        fused_scores: dict[tuple[str, int], float] = {}
+        for name, hits in legs.items():
+            for rank, h in enumerate(hits, start=1):
+                key = (h.src, h.page)
+                fused_scores[key] = fused_scores.get(key, 0.0) + 1.0 / (self.settings.rrf_k + rank)
+        # one PageResult per point; prefer the colpali hit (best visual evidence)
+        best: dict[tuple[str, int], PageResult] = {}
+        for name in ("colpali", "dense", "sparse"):
+            for h in legs[name]:
+                best.setdefault((h.src, h.page), h)
+        for h in legs["colpali"]:
+            best[(h.src, h.page)] = h
+        ordered = sorted(fused_scores.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
         results: list[PageResult] = []
-        for pid, score in ordered:
-            h = by_id[pid]
-            h.score = score
-            results.append(h)
-        return results
+        for key, score in ordered:
+            h = best[key]
+            per_leg = {name: float(next((x.score for x in hits if (x.src, x.page) == key), 0.0)) for name, hits in legs.items()}
+            found = [name for name, hits in legs.items() if any((x.src, x.page) == key for x in hits)]
+            results.append(
+                PageResult(
+                    score=score,
+                    src=h.src,
+                    page=h.page,
+                    text=h.text,
+                    image=h.image,
+                    payload=h.payload,
+                    leg=per_leg,
+                    legs=found,
+                )
+            )
+        trace.fusion_ms = (perf_counter() - t) * 1000.0
+        trace.fused = results
+        return results, trace
 
     def _query_plain(self, query: Any, using: str, limit: int) -> list[PageResult]:
         hits = self.client.query_points(

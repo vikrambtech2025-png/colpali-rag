@@ -13,7 +13,7 @@ goes to your OmniRoute kilo model.
 |---|---|
 | Visual retrieval | `vidore/colqwen2-v1.0-hf` — per-patch 128-d vectors, Qdrant `late_interaction` MaxSim |
 | Text retrieval | `BAAI/bge-large-en-v1.5` dense (1024-d) + `Qdrant/bm25` sparse via fastembed |
-| Fusion | Reciprocal Rank Fusion (Qdrant server-side, python RRF fallback) |
+| Fusion | Reciprocal Rank Fusion (traced three-leg RRF keyed by source+page; the per-leg rankings are returned with every query for the UI inspector) |
 | Vector store | Qdrant local mode (single writer process = the API server) |
 | Generation | Pluggable: `TextGenerator` (grounded in page text, free kilo model), `VisionGenerator` slot |
 | Tracked | per-ingest + per-eval runs in MLflow (`data/mlruns`) |
@@ -34,6 +34,11 @@ goes to your OmniRoute kilo model.
 .\powershell\demo.ps1
 ```
 
+For the **college showcase** version (scripted demo, curated chart-heavy docs,
+story materials, failover notes): see [`demo/README.md`](demo/README.md). The
+one-command setup is `scripts\prepare-demo.ps1` (stop app → generate demo PDFs →
+ingest → start with pre-warmed models). Poster/slide material: [`demo/STORY.md`](demo/STORY.md).
+
 Ask in the UI, e.g. *"What does the revenue chart show for each product line?"* —
 the answer is grounded in the retrieved page with `[file.pdf (page N)]` citations.
 
@@ -41,7 +46,7 @@ the answer is grounded in the retrieved page with `[file.pdf (page N)]` citation
 
 | Endpoint | Description |
 |---|---|
-| `POST /v1/query` | `{query, top_k, generate}` → answer + citations + retrieved pages (with page images) |
+| `POST /v1/query` | `{query, top_k, generate}` → answer + citations + retrieved pages (with page images), `latency_ms`, and a `trace` of the three retrieval legs + RRF fusion |
 | `POST /v1/ingest` | multipart PDF upload → async job, poll `GET /v1/ingest/{job_id}` |
 | `GET /v1/sources` | indexed documents: `[{"src": filename, "pages": n}, ...]` |
 | `GET /v1/health` | qdrant + models + generator status |
@@ -49,10 +54,13 @@ the answer is grounded in the retrieved page with `[file.pdf (page N)]` citation
 | `DELETE /v1/collection` | wipe index (auth required if `API_KEY` set) |
 | `GET /docs` | OpenAPI/Swagger |
 
-The web UI at `/` is a chat surface: drag & drop or pick PDFs to upload
-(asynchronous jobs poll `GET /v1/ingest/{job_id}`), then ask questions. Answers
-show the generation backend/model, a `sources:` line with citations, and
-clickable page thumbnails of the retrieved pages.
+The web UI at `/` is a chat surface: hero header with live doc/page stats and
+quick-start question chips, drag & drop or pick PDFs to upload (asynchronous jobs
+poll `GET /v1/ingest/{job_id}`), then ask questions. Answers show the generation
+backend/model, a `sources:` line with citations, clickable page thumbnails of the
+retrieved pages (colored badges = which retrieval legs found each page), and a
+collapsible **retrieval inspector** visualizing encode/leg/fusion latencies and
+the three per-leg rankings + fused order for that exact query.
 
 ## Config
 
@@ -84,6 +92,8 @@ uv run python scripts/check_gateway.py --probe kilo-auto
 
 Retrieval/ingest tunables live in `config.yaml`. The app still serves retrieval +
 citations if the gateway is unreachable (the answer field reports the reason).
+`runtime.warmup_on_start: true` pre-loads the embedders at boot so the first
+query is instant — set it for demo boxes (already on in `config.yaml`).
 
 ## Answer generation modes (`GENERATION_MODE` in `.env`)
 
@@ -119,8 +129,12 @@ Baseline (committed in `evals/baseline.json`, re-run with the commands above):
 
 Findings: hybrid matches the perfect visual-only retrieval — RRF fusion lifts the
 weaker dense-text leg (2/10 golds at rank 1 on chart/figure queries) to rank 0.
-Scores are ceiling-limited by the small 8-page corpus; grow `golden_queries.json`
-toward 30–100 queries before relying on the absolute numbers.
+The numbers were re-verified on 2026-09-25 after the fusion path became a traced
+three-leg RRF (and on the larger corpus: 5+ PDFs, 26 indexed pages) — unchanged.
+The demo pack's 8 scripted questions also retrieve their gold pages at rank 0,
+including 3 questions answerable only from chart pixels. Scores are
+ceiling-limited by the small dev set; grow `golden_queries.json` toward 30–100
+queries before relying on the absolute numbers.
 
 ## Architecture
 

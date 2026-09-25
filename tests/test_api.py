@@ -76,6 +76,16 @@ def test_query_rejects_blank(client):
     assert r.status_code == 422
 
 
+def test_query_returns_trace(client):
+    r = client.post("/v1/query", json={"query": "hello", "top_k": 5, "generate": False})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["latency_ms"] >= 0
+    assert body["trace"] is not None
+    assert "legs" in body["trace"] and "fused" in body["trace"]
+    assert body["trace"]["total_ms"] >= 0
+
+
 def test_index_page_served(client):
     r = client.get("/")
     assert r.status_code == 200

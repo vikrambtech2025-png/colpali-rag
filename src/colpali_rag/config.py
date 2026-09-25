@@ -87,6 +87,9 @@ class Settings(BaseSettings):
     api_port: int = 8000
     api_key: str = ""  # empty = auth disabled
 
+    # ---- runtime ----
+    warmup_on_start: bool = False  # load embedders at boot (demo boxes: be ready instantly)
+
     # ---- OCR ----
     ocr_enabled: bool = False
     min_text_chars: int = 40

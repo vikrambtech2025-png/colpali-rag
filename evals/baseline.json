@@ -1,10 +1,10 @@
 {
-  "description": "Retrieval baseline for colpali-rag (Qdrant local mode, RRF-60 hybrid). Dev set: evals/golden_queries.json (10 hand-checked queries over 8 indexed pages across 3 PDFs). All scores are hit@k / mrr@10 / ndcg@5 with binary relevance against the gold (src, page).",
+  "description": "Retrieval baseline for colpali-rag (Qdrant local mode, RRF-60 hybrid). Dev set: evals/golden_queries.json (10 hand-checked queries). Re-verified against the full indexed corpus (5+ demo/uploaded PDFs, 26 points) on 2026-09-25 after the fusion path was re-implemented as a traced three-leg RRF.",
   "generated": "2026-09-25",
   "models": {
     "colpali": "ColQwen2 (visual, late-interaction MaxSim)",
     "text": "BGE-M3 dense + sparse (hybrid leg)",
-    "fusion": "RRF k=60"
+    "fusion": "RRF k=60, keyed by (src, page)"
   },
   "top_k": 10,
   "modes": {
@@ -35,7 +35,8 @@
   },
   "notes": [
     "hybrid == colpali == perfect MRR/NDCG; dense text leg is the weakest (2 golds at rank 1, chart/figure-heavy queries). RRF fusion lifts every query to rank 0.",
-    "Scores are ceiling-limited: 8 indexed pages is a small corpus; grow the dev set toward 30-100 queries before relying on the absolute numbers.",
+    "The demo corpus (demo/pdfs: NanoSat spec + SaaS cohort report, 8 chart/table-heavy pages) also retrieves its gold pages at rank 0 on all 8 scripted demo questions.",
+    "Scores are relatively small-corpus; grow the dev set toward 30-100 queries before relying on the absolute numbers.",
     "Per-query detail (ranks, hits) is archived under evals/results/<mode>.json. Re-run with: uv run python -m colpali_rag.eval --mode hybrid --out evals/results/hybrid.json"
   ]
 }

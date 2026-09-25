@@ -25,6 +25,7 @@ from .generator import Generation, generate_with_fallback, get_generator
 from .ingest import IngestPipeline, IngestReport
 from .qdrant_store import QdrantStore
 from .retrieve import Retriever
+from .ui import UI_HTML
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +51,8 @@ class QueryResponse(BaseModel):
     generation_note: str = ""
     citations: list[str] = []
     pages: list[dict[str, Any]] = Field(default_factory=list)
+    latency_ms: float = 0.0
+    trace: dict[str, Any] | None = None  # retrieval fusion trace (inspector UI)
 
 
 class IngestStatus(BaseModel):
@@ -119,6 +122,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "page": page.page,
             "text": (page.text or "")[:1500],
             "image": page.image if page.image else None,
+            "leg": {k: round(v, 4) for k, v in page.leg.items()},
+            "legs": list(page.legs),
         }
 
     def _run_query(req: QueryRequest) -> QueryResponse:
@@ -129,6 +134,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             query=req.query,
             pages=[_page_dict(p) for p in pages],
             citations=[p.citation for p in pages[: settings.generation_top_pages]],
+            latency_ms=round((time.perf_counter() - t0) * 1000.0, 1),
+            trace=result.trace,
         )
         if req.generate and pages:
             gen: Generation = generate_with_fallback(runtime.generator, req.query, pages)
@@ -223,193 +230,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
-UI_HTML = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ColPali RAG</title>
-<style>
-  :root { color-scheme: dark; --bg:#0b0f14; --panel:#131a22; --line:#223042; --txt:#dbe6f2; --mut:#7f93a8; --acc:#3ba55d; }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family: system-ui, Segoe UI, sans-serif; background:var(--bg); color:var(--txt); height:100vh; display:flex; flex-direction:column; }
-  header { padding:12px 22px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; }
-  header h1 { font-size:17px; margin:0; } header .tag { color:var(--mut); font-size:12px; }
-  #stats { margin-left:auto; color:var(--mut); font-size:12px; }
-  #upload { padding:12px 22px; border-bottom:1px solid var(--line); display:flex; flex-direction:column; gap:8px; }
-  #drop { border:1px dashed var(--line); border-radius:10px; padding:14px; text-align:center; color:var(--mut); font-size:13px; cursor:pointer; transition:border-color .15s; }
-  #drop.over { border-color:var(--acc); color:var(--txt); }
-  #uploadbar { display:flex; gap:8px; align-items:center; }
-  #file { display:none; }
-  #pick { background:var(--panel); border:1px solid var(--line); color:var(--txt); padding:8px 14px; border-radius:8px; cursor:pointer; font-size:13px; }
-  #upbtn { background:var(--acc); border:0; color:#04110a; font-weight:700; padding:8px 16px; border-radius:8px; cursor:pointer; }
-  #upbtn:disabled { opacity:.5; cursor:wait; }
-  #upstatus { color:var(--mut); font-size:12px; flex:1; }
-  #sources { display:flex; flex-wrap:wrap; gap:6px; font-size:12px; }
-  .chip { background:var(--panel); border:1px solid var(--line); color:var(--mut); padding:3px 9px; border-radius:999px; }
-  #chat { flex:1; overflow-y:auto; padding:18px 22px; display:flex; flex-direction:column; gap:14px; }
-  .msg { max-width:820px; display:flex; flex-direction:column; }
-  .msg.user { align-self:flex-end; align-items:flex-end; }
-  .msg.bot { align-self:flex-start; align-items:flex-start; }
-  .bubble { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; white-space:pre-wrap; line-height:1.55; font-size:14px; }
-  .msg.user .bubble { background:#1c2b23; border-color:#2c4a3a; }
-  .meta { margin-top:8px; font-size:11px; color:var(--mut); }
-  .mut { color:var(--mut); font-size:12px; margin-top:8px; }
-  .empty { color:var(--mut); font-size:13px; }
-  .thumbs { display:flex; gap:10px; overflow-x:auto; margin-top:10px; padding-bottom:4px; }
-  .thumbs .thumb { flex:0 0 auto; }
-  .thumbs img { height:110px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer; display:block; }
-  .thumbs .cap { font-size:10px; color:var(--mut); margin-top:3px; max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #composer { border-top:1px solid var(--line); padding:14px 22px; display:flex; gap:8px; align-items:flex-end; }
-  #q { flex:1; background:var(--panel); border:1px solid var(--line); color:var(--txt); padding:11px 13px; border-radius:8px; font-size:14px; resize:none; font-family:inherit; }
-  #go { background:var(--acc); border:0; color:#04110a; font-weight:700; padding:11px 18px; border-radius:8px; cursor:pointer; }
-  #go:disabled { opacity:.5; cursor:wait; }
-</style>
-</head>
-<body>
-<header>
-  <h1>ColPali RAG</h1><span class="tag">visual + hybrid document retrieval</span>
-  <span id="stats">— docs</span>
-</header>
-<section id="upload">
-  <div id="drop">Drop PDFs here or click to choose — they are indexed and you can ask about them right away</div>
-  <div id="uploadbar">
-    <input type="file" id="file" accept=".pdf" multiple>
-    <button id="pick" onclick="document.getElementById('file').click()">choose files</button>
-    <button id="upbtn" onclick="uploadFiles()">upload</button>
-    <span id="upstatus"></span>
-  </div>
-  <div id="sources"></div>
-</section>
-<main id="chat"></main>
-<section id="composer">
-  <textarea id="q" rows="2" placeholder="Ask about your documents… e.g. what does the revenue chart show?"></textarea>
-  <button id="go" onclick="ask()">Ask</button>
-</section>
-<script>
-const $ = id => document.getElementById(id);
-const esc = s => (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-function addMsg(role, html) {
-  const d = document.createElement('div');
-  d.className = 'msg ' + role;
-  d.innerHTML = html;
-  $('chat').appendChild(d);
-  $('chat').scrollTop = $('chat').scrollHeight;
-  return d;
-}
-
-async function refreshInfo() {
-  try {
-    const s = await (await fetch('/v1/sources')).json();
-    const pts = await (await fetch('/v1/collection')).json();
-    const docs = s.length, points = pts.points || 0;
-    $('stats').textContent = docs + ' doc' + (docs === 1 ? '' : 's') + ' · ' + points + ' pages';
-    $('sources').innerHTML = s.length ? s.map(x =>
-      '<span class="chip">' + esc(x.src) + ' · ' + x.pages + 'p</span>').join('')
-      : '<span class="chip">no documents indexed yet</span>';
-    if (!docs && !$('chat').children.length) {
-      addMsg('bot', '<div class="bubble"><span class="empty">Welcome. Upload a PDF above (or drop it anywhere on the box) and then ask me anything about it.</span></div>');
-    }
-  } catch (e) { $('stats').textContent = 'server starting…'; }
-}
-
-async function ask() {
-  const q = $('q').value.trim();
-  if (!q) return;
-  const go = $('go');
-  addMsg('user', '<div class="bubble">' + esc(q) + '</div>');
-  $('q').value = '';
-  go.disabled = true;
-  const waitEl = addMsg('bot', '<div class="bubble"><span class="empty">retrieving…</span></div>');
-  try {
-    const r = await fetch('/v1/query', { method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ query: q, top_k: 6, generate: true }) });
-    if (!r.ok) {
-      const errBody = await r.json().catch(() => ({}));
-      throw new Error('HTTP ' + r.status + (errBody.detail ? ' — ' + errBody.detail : '') + (r.status === 401 ? ' (server requires an API key the web UI cannot supply)' : ''));
-    }
-    const d = await r.json();
-    const srcLabel = d.generation_backend ? esc(d.generation_backend + (d.generation_model ? ' · ' + d.generation_model : '')) : '';
-    const sources = (d.citations && d.citations.length) ? '<div class="mut">sources: ' + esc(d.citations.join(' · ')) + '</div>' : '';
-    const note = d.generation_note ? '<div class="mut">' + esc(d.generation_note) + '</div>' : '';
-    const meta = d.answer ? '<div class="meta">answered by ' + (srcLabel || 'retrieval only') + '</div>' : '';
-    const thumbs = (d.pages && d.pages.length) ? '<div class="thumbs">' + d.pages.map(p =>
-        '<div class="thumb">' +
-        (p.image ? '<img src="/assets/' + esc(p.image) + '" loading="lazy" title="' + esc((p.text || '').slice(0, 180)) + '" onclick="window.open(this.src)">' : '') +
-        '<div class="cap">' + esc(p.src) + ' · p' + p.page + ' · ' + p.score.toFixed(3) + '</div></div>').join('')
-      : '';
-    const ans = (d.answer && d.answer !== '""') ? esc(d.answer)
-      : '<span class="empty">' + esc(d.generation_note || 'No answer (no pages retrieved — upload a PDF first).') + '</span>';
-    waitEl.innerHTML = '<div class="bubble">' + ans + meta + sources + note + '</div>' + thumbs;
-  } catch (e) {
-    waitEl.innerHTML = '<div class="bubble"><span class="empty">error: ' + esc(e.message) + '</span></div>';
-  } finally {
-    go.disabled = false;
-    $('q').focus();
-  }
-}
-
-async function uploadFiles(picked) {
-  const files = Array.from(picked || $('file').files || []);
-  if (!files.length) return;
-  const btn = $('upbtn'), st = $('upstatus');
-  btn.disabled = true;
-  for (const f of files) {
-    if (!f.name.toLowerCase().endsWith('.pdf')) { st.textContent = f.name + ' skipped (only PDF files are supported)'; continue; }
-    st.textContent = 'uploading ' + f.name + '…';
-    try {
-      const fd = new FormData(); fd.append('file', f);
-      const r = await fetch('/v1/ingest', { method:'POST', body: fd });
-      const body = await r.json().catch(() => ({}));
-      if (!r.ok) { st.textContent = f.name + ' failed: ' + (body.detail || ('HTTP ' + r.status)); continue; }
-      await pollJob(body.job_id, f.name);
-    } catch (e) { st.textContent = f.name + ' failed: ' + e.message; }
-  }
-  $('file').value = '';
-  btn.disabled = false;
-  refreshInfo();
-}
-
-async function pollJob(id, name) {
-  for (;;) {
-    await sleep(1200);
-    let j;
-    try { j = await (await fetch('/v1/ingest/' + id)).json(); }
-    catch (e) { continue; }
-    if (j.status === 'done' || j.status === 'partial') {
-      const rep = j.report || {};
-      $('upstatus').textContent = name + ' indexed · ' + rep.pages + ' pages in ' + rep.duration_s + 's' +
-        ((j.status === 'partial' && rep.errors && rep.errors.length) ? ' (' + esc(rep.errors.join('; ')) + ')' : '') +
-        ' — you can ask about it now.';
-      return;
-    }
-    if (j.status === 'error') {
-      const rep = j.report || {};
-      $('upstatus').textContent = name + ' failed: ' + ((rep.errors || ['unknown error']).join('; '));
-      return;
-    }
-  }
-}
-
-const drop = $('drop');
-drop.addEventListener('click', () => $('file').click());
-['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
-['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
-drop.addEventListener('drop', e => {
-  const files = Array.from(e.dataTransfer.files || []);
-  if (files.length) uploadFiles(files);
-});
-$('file').addEventListener('change', () => uploadFiles());
-$('q').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); } });
-refreshInfo();
-</script>
-</body>
-</html>
-"""
-
-
 def main() -> None:
     import uvicorn
 
@@ -417,6 +237,15 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     configure_hf_env(settings)
     app = create_app(settings)
+    runtime = app.state.runtime
+    if settings.warmup_on_start:
+        log.info("warmup_on_start: loading embedders before serving...")
+        try:
+            runtime.colpali.embed_query("warmup")
+            runtime.text.embed_query("warmup")
+            log.info("embedders warm: first query will be instant")
+        except Exception as exc:  # pragma: no cover
+            log.warning("model warmup failed (server will lazy-load on first use): %s", exc)
     uvicorn.run(app, host=settings.api_host, port=settings.api_port)
 
 

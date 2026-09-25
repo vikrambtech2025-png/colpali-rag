@@ -41,3 +41,6 @@ generation:
 ocr:
   ocr_enabled: false        # true = OCR pages with no embedded text (rapidocr)
   min_text_chars: 40
+
+runtime:
+  warmup_on_start: true     # load embedders at boot so the first query is instant (demo-safe)
