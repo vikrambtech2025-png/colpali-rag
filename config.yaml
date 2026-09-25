@@ -44,7 +44,9 @@ retrieval:
   rrf_k: 60
 
 generation:
-  generation_mode: text            # text | extractive | vision (extractive = local no-LLM answers)
+  # generation_mode lives in .env (GENERATION_MODE) - a per-deployment switch
+  # (text | extractive | vision), NOT here: yaml values become constructor args
+  # and would shadow the .env setting (same rule as qdrant_url above).
   generation_top_pages: 3
   excerpt_chars: 16000
   temperature: 0.2
