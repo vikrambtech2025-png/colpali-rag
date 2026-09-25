@@ -176,6 +176,13 @@ reverse proxy (Caddy/nginx) in front for internet exposure.
   via `OMNIRoute_VISION_MODEL` on the gateway. Falls back to extractive when the
   gateway is down or the page images are missing.
 
+**Grounded-answer guard** (all gateway backends): before an LLM answer is
+returned it is checked for grounding — refusal wording ("I don't see any page
+images…") and citations pointing at pages that were *not* retrieved are rejected,
+and the local extractive answerer answers instead (the `note` field records the
+reason). Grounded answers with citations that exist in the retrieved set pass
+through unchanged. This guarantees the API never surfaces an invented citation.
+
 ## Evaluation
 
 ```powershell
@@ -195,7 +202,7 @@ Baseline (committed in `evals/baseline.json`, re-run with the commands above):
 
 | mode   | hit@3 | hit@5 | hit@10 | mrr@10 | ndcg@5 |
 |--------|-------|-------|--------|--------|--------|
-| hybrid | 1.000 | 1.000 | 1.000  | 1.000  | 1.000  |
+| hybrid | 1.000 | 1.000 | 1.000  | 0.950  | 0.963  |
 | colpali| 1.000 | 1.000 | 1.000  | 1.000  | 1.000  |
 | dense  | 1.000 | 1.000 | 1.000  | 0.900  | 0.926  |
 
@@ -207,6 +214,10 @@ The demo pack's 8 scripted questions also retrieve their gold pages at rank 0,
 including 3 questions answerable only from chart pixels. Scores are
 ceiling-limited by the small dev set; grow `golden_queries.json` toward 30–100
 queries before relying on the absolute numbers.
+
+The baseline was re-verified **live against Qdrant Cloud** on 2026-09-25
+(`evals/results/hybrid-cloud.json`, 6 docs / 17 points, hybrid mode): hit@3/5/10 =
+1.000, MRR@10 = 0.950, NDCG@5 = 0.963 — identical to the local-mode baseline.
 
 ## Architecture
 
