@@ -47,12 +47,18 @@ the answer is grounded in the retrieved page with `[file.pdf (page N)]` citation
 | Endpoint | Description |
 |---|---|
 | `POST /v1/query` | `{query, top_k, generate}` → answer + citations + retrieved pages (with page images), `latency_ms`, and a `trace` of the three retrieval legs + RRF fusion |
-| `POST /v1/ingest` | multipart PDF upload → async job, poll `GET /v1/ingest/{job_id}` |
+| `POST /v1/ingest` | multipart PDF upload (capped at `max_upload_mb`) → async job, poll `GET /v1/ingest/{job_id}` (jobs are durable: they survive restarts) |
+| `GET /v1/ingest/{job_id}` | job status — resolved from the durable SQLite job log after restarts |
 | `GET /v1/sources` | indexed documents: `[{"src": filename, "pages": n}, ...]` |
-| `GET /v1/health` | qdrant + models + generator status |
+| `GET /v1/health` | liveness: qdrant, points, models loaded, uptime, active/queued ingests, settings summary |
+| `GET /v1/ready` | readiness probe (public, for load balancers): `{ready, problems, models_warm}` |
 | `GET /v1/collection` | point count |
-| `DELETE /v1/collection` | wipe index (auth required if `API_KEY` set) |
+| `DELETE /v1/collection` | wipe index |
 | `GET /docs` | OpenAPI/Swagger |
+
+Every `/v1` endpoint **except** `health`/`ready` requires `X-API-Key` when
+`API_KEY` is set, and query/ingest are rate-limited per client IP. The chat UI
+at `/` prompts once for the key and remembers it (localStorage).
 
 The web UI at `/` is a chat surface: hero header with live doc/page stats and
 quick-start question chips, drag & drop or pick PDFs to upload (asynchronous jobs
@@ -117,6 +123,37 @@ startup, so a bad URL / API key fails the boot immediately with a clear error.
 Sparse vectors are stored as a proper Qdrant named sparse vector (queried with
 `using="sparse"`), not in the payload — re-ingest existing documents after
 upgrading to populate the sparse leg.
+
+## Production hardening
+
+Built-in, zero extra dependencies, tunable from `config.yaml` → `security:`:
+
+- **Auth** — set `API_KEY=...` in `.env` and every `/v1` endpoint except
+  `health`/`ready` rejects calls without the correct `X-API-Key` header
+  (constant-time comparison). Boot logs a loud warning when auth is off. The
+  web UI prompts for the key once and stores it in localStorage.
+- **Rate limiting** — fixed 60-second window per client IP: `rate_limit_per_minute`
+  for `/v1/query`, `rate_limit_ingest_per_minute` for `/v1/ingest` (429 beyond).
+  In-memory, resets on restart.
+- **Upload caps** — `max_upload_mb` (default 50) rejects oversized PDFs with 413
+  via both the `Content-Length` header and a stream read cap.
+- **Concurrency guards** — `max_concurrent_ingests` (default 2) queues extra
+  uploads (status stays `queued`); `max_concurrent_queries` (default 2) caps
+  parallel GPU retrievals so bursts don't thrash VRAM.
+- **CORS** — `cors_origins` whitelist (defaults to `localhost:8000`).
+- **Durable ingest jobs** — every job is written to `data/ingest_jobs.db`
+  (SQLite); on restart, jobs a crash left in flight are marked `failed` and
+  history stays queryable via `GET /v1/ingest/{job_id}`.
+- **Observability** — console + rotating file log (`data/logs/app.log`,
+  `maxBytes=5MB × 3` backups), `GET /v1/ready` for load balancers, and
+  `GET /v1/health` reports points, models loaded, uptime, and active/queued
+  ingests.
+
+Honest remaining limits (sizing, not code): the embedders are GPU-bound in one
+process, so throughput is bounded by the 6 GB card; rate limit buckets and
+CORS origins are per-instance (fine for single-node, not a multi-instance
+deployment); there is no TLS termination or auth for the OpenAPI docs — put a
+reverse proxy (Caddy/nginx) in front for internet exposure.
 
 ## Answer generation modes (`GENERATION_MODE` in `.env`)
 

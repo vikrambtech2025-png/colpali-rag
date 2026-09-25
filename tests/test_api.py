@@ -37,6 +37,7 @@ def client(tmp_path):
         hf_cache=tmp_path / "hf",
         manifests_dir=tmp_path / "manifests",
         corpus_dir=tmp_path / "corpus",
+        jobs_db=tmp_path / "jobs.db",
         generation_mode="text",
         omniroute_model="kilo-test",
     )

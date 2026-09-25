@@ -20,6 +20,8 @@ data/qdrant-*/
 data/hf-cache/
 data/manifests/
 data/mlruns/
+data/logs/
+data/ingest_jobs.db
 models/
 runs/
 

@@ -174,10 +174,24 @@ function inspectorHTML(t) {
     '<div class="fused"><h6>RRF fusion ranking</h6>' + fusedRows + '</div></div></div>';
 }
 
+// ---- API key support: single shared key from .env (API_KEY). Stored in
+// localStorage after a one-time prompt when the server returns 401.
+const KEY = localStorage.getItem('colpali_api_key') || '';
+async function jfetch(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers || {}, KEY ? { 'X-API-Key': KEY } : {});
+  const r = await fetch(path, opts);
+  if (r.status === 401 && !KEY) {
+    const k = window.prompt('This server requires an API key (set API_KEY=... in .env). Enter it here:');
+    if (k) { localStorage.setItem('colpali_api_key', k); return jfetch(path, opts); }
+  }
+  return r;
+}
+
 async function refreshInfo() {
   try {
-    const s = await (await fetch('/v1/sources')).json();
-    const pts = await (await fetch('/v1/collection')).json();
+    const s = await (await jfetch('/v1/sources')).json();
+    const pts = await (await jfetch('/v1/collection')).json();
     const docs = s.length, points = pts.points || 0;
     $('stats').innerHTML = '<b>' + docs + '</b> doc' + (docs === 1 ? '' : 's') + ' · <b>' + points + '</b> pages';
     $('sources').innerHTML = s.length ? s.map(x =>
@@ -207,11 +221,11 @@ async function ask() {
   go.disabled = true;
   const waitEl = addMsg('bot', '<div class="bubble"><span class="empty">retrieving…</span></div>');
   try {
-    const r = await fetch('/v1/query', { method:'POST', headers:{'Content-Type':'application/json'},
+    const r = await jfetch('/v1/query', { method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ query: q, top_k: 6, generate: true }) });
     if (!r.ok) {
       const errBody = await r.json().catch(() => ({}));
-      throw new Error('HTTP ' + r.status + (errBody.detail ? ' — ' + errBody.detail : '') + (r.status === 401 ? ' (server requires an API key the web UI cannot supply)' : ''));
+      throw new Error('HTTP ' + r.status + (errBody.detail ? ' — ' + errBody.detail : '') + (r.status === 401 ? ' (server requires an API key — add API_KEY to the server .env, then reload)' : ''));
     }
     const d = await r.json();
     const srcLabel = d.generation_backend ? esc(d.generation_backend + (d.generation_model ? ' · ' + d.generation_model : '')) : '';
@@ -248,7 +262,7 @@ async function uploadFiles(picked) {
     st.textContent = 'uploading ' + f.name + '…';
     try {
       const fd = new FormData(); fd.append('file', f);
-      const r = await fetch('/v1/ingest', { method:'POST', body: fd });
+      const r = await jfetch('/v1/ingest', { method:'POST', body: fd });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) { st.textContent = f.name + ' failed: ' + (body.detail || ('HTTP ' + r.status)); continue; }
       await pollJob(body.job_id, f.name);
@@ -263,7 +277,7 @@ async function pollJob(id, name) {
   for (;;) {
     await sleep(1200);
     let j;
-    try { j = await (await fetch('/v1/ingest/' + id)).json(); }
+    try { j = await (await jfetch('/v1/ingest/' + id)).json(); }
     catch (e) { continue; }
     if (j.status === 'done' || j.status === 'partial') {
       const rep = j.report || {};

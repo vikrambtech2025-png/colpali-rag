@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     qdrant_path: Path = ROOT / "data" / "qdrant"
     hf_cache: Path = ROOT / "data" / "hf-cache"
     manifests_dir: Path = ROOT / "data" / "manifests"
+    jobs_db: Path = ROOT / "data" / "ingest_jobs.db"  # durable ingest job log (survives restarts)
+    log_file: Path = ROOT / "data" / "logs" / "app.log"  # rotating file log
 
     # ---- models ----
     colpali_model: str = "vidore/colqwen2-v1.0-hf"
@@ -91,10 +93,19 @@ class Settings(BaseSettings):
     generation_retries: int = 2       # extra attempts when the gateway errors/returns empty
     generation_retry_delay: float = 2.0  # seconds between retries
 
-    # ---- API ----
+    # ---- API / security ----
     api_host: str = "127.0.0.1"
     api_port: int = 8000
-    api_key: str = ""  # empty = auth disabled
+    api_key: str = ""  # set a shared secret in .env to require auth on every /v1 endpoint (except health/ready)
+
+    # ---- production hardening ----
+    cors_origins: list[str] = ["http://localhost:8000", "http://127.0.0.1:8000"]
+    rate_limit_per_minute: int = 60        # /v1/query per client IP
+    rate_limit_ingest_per_minute: int = 10  # /v1/ingest per client IP
+    max_upload_mb: int = 50                # PDF upload cap (rejected with 413)
+    max_concurrent_ingests: int = 2        # GPU-friendly cap; extra uploads queue (status "queued")
+    max_concurrent_queries: int = 2        # cap concurrent GPU retrievals per process
+    log_level: str = "INFO"                # console + file logging level
 
     # ---- runtime ----
     warmup_on_start: bool = False  # load embedders at boot (demo boxes: be ready instantly)
@@ -137,6 +148,10 @@ class Settings(BaseSettings):
         if self.qdrant_path and not self.is_cloud:
             self.qdrant_path.mkdir(parents=True, exist_ok=True)
         self.hf_cache.mkdir(parents=True, exist_ok=True)
+        if self.jobs_db:
+            self.jobs_db.parent.mkdir(parents=True, exist_ok=True)
+        if self.log_file:
+            self.log_file.parent.mkdir(parents=True, exist_ok=True)
 
     @property
     def is_cloud(self) -> bool:
@@ -155,6 +170,10 @@ class Settings(BaseSettings):
             "generation_base_url": self.omniroute_base_url,
             "ocr_enabled": self.ocr_enabled,
             "api": f"{self.api_host}:{self.api_port}",
+            "auth": "on" if self.api_key else "off",
+            "rate_limit_per_minute": self.rate_limit_per_minute,
+            "max_upload_mb": self.max_upload_mb,
+            "max_concurrent_ingests": self.max_concurrent_ingests,
         }
 
 

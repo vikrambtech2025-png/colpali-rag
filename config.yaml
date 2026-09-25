@@ -15,6 +15,17 @@ paths:
   qdrant_path: data/qdrant
   hf_cache: data/hf-cache
   manifests_dir: data/manifests
+  jobs_db: data/ingest_jobs.db     # durable ingest job log (survives restarts)
+  log_file: data/logs/app.log      # rotating file log (gitignored)
+
+security:
+  cors_origins: ["http://localhost:8000", "http://127.0.0.1:8000"]
+  rate_limit_per_minute: 60         # /v1/query per client IP
+  rate_limit_ingest_per_minute: 10  # /v1/ingest per client IP
+  max_upload_mb: 50                 # PDF upload cap (413 beyond this)
+  max_concurrent_ingests: 2         # GPU-friendly cap; extra uploads queue (status: queued)
+  max_concurrent_queries: 2         # cap concurrent GPU retrievals per process
+  log_level: INFO
 
 vectordb:
   collection: docs
